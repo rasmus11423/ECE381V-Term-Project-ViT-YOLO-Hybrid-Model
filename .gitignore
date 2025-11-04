@@ -1,0 +1,107 @@
+# Neptune.ai API Token and Configuration
+# Ignore Neptune API tokens in any file
+*api_token*
+*neptune_token*
+.neptune/
+neptune_token.txt
+neptune_api_token.txt
+.env
+.env.local
+.env.*.local
+config.ini
+secrets.json
+credentials.json
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual Environments
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+.venv/
+
+# PyCharm
+.idea/
+
+# VS Code
+.vscode/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# PyTorch
+*.pth
+*.pt
+*.ckpt
+*.pkl
+*.h5
+*.hdf5
+
+# Model checkpoints and weights
+checkpoints/
+models/
+weights/
+saved_models/
+runs/
+wandb/
+lightning_logs/
+
+# Data directories
+data/
+datasets/
+*.csv
+*.json
+*.parquet
+*.npy
+*.npz
+
+# Logs
+*.log
+logs/
+*.out
+
+# OS files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+*.swp
+*.swo
+*~
+
+# Temporary files
+*.tmp
+*.temp
+.cache/
+
+# Neptune specific
+.neptune_cache/
+neptune_runs/
+
