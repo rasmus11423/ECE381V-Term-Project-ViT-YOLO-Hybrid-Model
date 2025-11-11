@@ -73,6 +73,9 @@ lightning_logs/
 # Data directories
 data/
 datasets/
+Data/
+GroundTruth/
+Output/
 *.csv
 *.json
 *.parquet
@@ -83,6 +86,8 @@ datasets/
 *.log
 logs/
 *.out
+Output/
+Error/
 
 # OS files
 .DS_Store
