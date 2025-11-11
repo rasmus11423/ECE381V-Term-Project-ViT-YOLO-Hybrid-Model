@@ -8,9 +8,9 @@
 
 #SBATCH -p gg                                              # Grace Hopper GPU partition
 
-#SBATCH -N 1
+#SBATCH -N 6
 
-#SBATCH -n 1
+#SBATCH -n 6
 
 #SBATCH -t 24:00:00
 
@@ -18,13 +18,25 @@
 
 #SBATCH --mail-user='rl37272@my.utexas.edu'
 
+# Reset modules to clear any conflicts
 module reset
 
+# Load dependencies in correct order (required before python3/3.11.8)
+echo "Loading required modules..."
 module load gcc/13.2.0
-
 module load cuda/12.8
 
+# Load Python module (requires gcc and cuda to be loaded first)
+echo "Loading Python module..."
 module load python3/3.11.8
+
+# Verify Python is loaded
+if ! command -v python3 &> /dev/null; then
+    echo "Error: Python3 not found after loading module"
+    echo "Current modules:"
+    module list
+    exit 1
+fi
 
 # Get the directory where this script is located
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"

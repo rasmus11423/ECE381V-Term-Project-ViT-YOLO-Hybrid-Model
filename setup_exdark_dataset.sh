@@ -4,7 +4,11 @@
 # This script creates a virtual environment and installs all required packages
 # 
 # Usage on TACC:
-# 1. Load required modules: module load python3/3.11.8 gcc/13.2.0 cuda/12.8
+# 1. Load required modules in this order:
+#    module reset
+#    module load gcc/13.2.0
+#    module load cuda/12.8
+#    module load python3/3.11.8
 # 2. Run this script: bash setup_exdark_dataset.sh
 
 set -e  # Exit on error
@@ -22,10 +26,13 @@ echo ""
 # Check if Python is available
 if ! command -v python3 &> /dev/null; then
     echo "Error: python3 is not installed or not in PATH"
-    echo "Please load Python module first:"
-    echo "  module load python3/3.11.8"
+    echo "Please load Python module first in this order:"
+    echo "  module reset"
     echo "  module load gcc/13.2.0"
     echo "  module load cuda/12.8"
+    echo "  module load python3/3.11.8"
+    echo ""
+    echo "Note: gcc and cuda must be loaded BEFORE python3/3.11.8"
     exit 1
 fi
 
