@@ -65,16 +65,28 @@ required_packages = [
 for pkg, import_name in required_packages:
     install_package(pkg, import_name)
 
-# Optional: Check for GPU (nvidia-smi)
+# Check for GPU (nvidia-smi) and CUDA environment
+print("="*60)
+print("GPU/CUDA Diagnostics:")
+print("="*60)
 try:
     result = subprocess.run(["nvidia-smi"], capture_output=True, text=True, timeout=5)
     if result.returncode == 0:
-        print("GPU available:")
-        print(result.stdout)
+        print("✓ nvidia-smi available:")
+        print(result.stdout[:500])  # First 500 chars
     else:
-        print("nvidia-smi not available (CPU mode)")
-except (subprocess.TimeoutExpired, FileNotFoundError, subprocess.SubprocessError):
-    print("nvidia-smi not available (CPU mode)")
+        print("✗ nvidia-smi not available")
+except (subprocess.TimeoutExpired, FileNotFoundError, subprocess.SubprocessError) as e:
+    print(f"✗ nvidia-smi error: {e}")
+
+# Check CUDA environment variables
+cuda_visible = os.environ.get("CUDA_VISIBLE_DEVICES", "Not set")
+print(f"CUDA_VISIBLE_DEVICES: {cuda_visible}")
+
+# Check CUDA library paths
+cuda_path = os.environ.get("CUDA_HOME", os.environ.get("CUDA_PATH", "Not set"))
+print(f"CUDA_HOME/CUDA_PATH: {cuda_path}")
+print("="*60)
 
 import gdown
 
@@ -421,12 +433,42 @@ class MetricsCallback:
             self.train_accuracies.append(0.0)
             self.test_accuracies.append(0.0)
 
-# Check if CUDA is available
+# Check if CUDA is available with detailed diagnostics
+print("\n" + "="*60)
+print("PyTorch CUDA Diagnostics:")
+print("="*60)
+print(f"PyTorch version: {torch.__version__}")
+print(f"torch.cuda.is_available(): {torch.cuda.is_available()}")
+if torch.cuda.is_available():
+    print(f"CUDA version (PyTorch): {torch.version.cuda}")
+    print(f"Number of GPUs: {torch.cuda.device_count()}")
+    for i in range(torch.cuda.device_count()):
+        print(f"  GPU {i}: {torch.cuda.get_device_name(i)}")
+        props = torch.cuda.get_device_properties(i)
+        print(f"    Memory: {props.total_memory / 1e9:.2f} GB")
+else:
+    print("⚠️  WARNING: CUDA not available in PyTorch!")
+    print("This could be due to:")
+    print("  1. PyTorch not installed with CUDA support")
+    print("  2. CUDA libraries not properly linked")
+    print("  3. CUDA_VISIBLE_DEVICES set incorrectly")
+    print("\nAttempting to check CUDA libraries...")
+    try:
+        import subprocess
+        result = subprocess.run(["ldconfig", "-p"], capture_output=True, text=True, timeout=5)
+        if "libcuda.so" in result.stdout or "libcudart.so" in result.stdout:
+            print("✓ CUDA libraries found in system")
+        else:
+            print("✗ CUDA libraries not found")
+    except:
+        pass
+print("="*60)
+
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
-print(f"Using device: {device}")
-if device == 'cuda':
-    print(f"GPU: {torch.cuda.get_device_name(0)}")
-    print(f"CUDA Version: {torch.version.cuda}")
+print(f"\nUsing device: {device}")
+if device == 'cpu':
+    print("⚠️  WARNING: Training will be VERY SLOW on CPU!")
+    print("   Consider checking PyTorch CUDA installation.")
 
 # Verify the YAML file exists
 yaml_path = Project_Path / "exdark.yaml"
@@ -447,7 +489,7 @@ model = YOLO(model_size)
 # Training parameters (define before Neptune logging)
 training_config = {
     'data': str(yaml_path.absolute()),  # Path to dataset YAML
-    'epochs': 10,  # Number of training epochs
+    'epochs': 100,  # Number of training epochs
     'imgsz': 640,  # Image size (pixels)
     'batch': 16,  # Batch size (adjust based on GPU memory: 8, 16, 32, 64)
     'device': device,  # 'cuda' or 'cpu'
@@ -493,7 +535,8 @@ if neptune_run is not None:
             "dataset": "ExDark",
             "num_classes": len(Classes),
         }
-        neptune_run["parameters/classes"] = Classes
+        # Convert list to string for Neptune compatibility
+        neptune_run["parameters/classes"] = ", ".join(Classes)
         print("Training parameters logged to Neptune.")
     except Exception as e:
         print(f"Warning: Error logging parameters to Neptune: {e}")
