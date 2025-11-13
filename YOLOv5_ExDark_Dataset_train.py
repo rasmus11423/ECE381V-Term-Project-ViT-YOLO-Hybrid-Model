@@ -489,7 +489,7 @@ model = YOLO(model_size)
 # Training parameters (define before Neptune logging)
 training_config = {
     'data': str(yaml_path.absolute()),  # Path to dataset YAML
-    'epochs': 100,  # Number of training epochs
+    'epochs': 10,  # Number of training epochs
     'imgsz': 640,  # Image size (pixels)
     'batch': 16,  # Batch size (adjust based on GPU memory: 8, 16, 32, 64)
     'device': device,  # 'cuda' or 'cpu'
