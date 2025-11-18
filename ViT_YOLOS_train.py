@@ -356,8 +356,23 @@ from transformers import (
 
 import neptune
 
-# Determine device early (needed for batch size adjustment later)
-device = "cuda" if torch.cuda.is_available() else "cpu"
+# Determine device - REQUIRE GPU for training (no CPU fallback)
+if not torch.cuda.is_available():
+    raise RuntimeError(
+        "CUDA is not available! This script requires GPU training. "
+        "Please ensure:\n"
+        "1. CUDA modules are loaded: module load cuda/12.8\n"
+        "2. PyTorch was installed with CUDA support\n"
+        "3. You are running on a GPU node (not login node)\n"
+        "4. CUDA_VISIBLE_DEVICES is set correctly"
+    )
+
+device = "cuda"
+num_gpus = torch.cuda.device_count()
+print(f"✓ CUDA available: {torch.cuda.is_available()}")
+print(f"✓ Number of GPUs detected: {num_gpus}")
+for i in range(num_gpus):
+    print(f"  GPU {i}: {torch.cuda.get_device_name(i)}")
 
 # Get class mappings for YOLOS
 num_classes = len(Classes)
@@ -489,41 +504,32 @@ val_dataset = ExDarkYoloDetectionDataset(
 )
 
 # ----------------------------------------------------------------------
-# 6.5. Adjust batch size based on GPU memory
+# 6.5. Adjust batch size based on GPU memory and number of GPUs
 # ----------------------------------------------------------------------
-if device == "cpu":
-    BATCH_SIZE = 2
-    NUM_WORKERS = 0  # Disable multiprocessing on CPU
-    print("Warning: Using CPU. Batch size reduced to 2, num_workers set to 0.")
-elif torch.cuda.is_available():
-    gpu_memory = torch.cuda.get_device_properties(0).total_memory / 1e9  # GB
-    if gpu_memory < 8:
-        BATCH_SIZE = 2
-        NUM_WORKERS = 2
-        print(f"GPU memory: {gpu_memory:.1f}GB. Using batch size 2.")
-    elif gpu_memory < 16:
-        BATCH_SIZE = 4
-        NUM_WORKERS = 4
-        print(f"GPU memory: {gpu_memory:.1f}GB. Using batch size 4.")
-    else:
-        BATCH_SIZE = 8
-        NUM_WORKERS = 4
-        print(f"GPU memory: {gpu_memory:.1f}GB. Using batch size 8.")
-else:
-    BATCH_SIZE = 4  # Default
-    NUM_WORKERS = 0  # Default to 0 for safety (especially on Windows)
+# GPU-only training - adjust batch size per GPU based on memory
+gpu_memory = torch.cuda.get_device_properties(0).total_memory / 1e9  # GB
+num_gpus = torch.cuda.device_count()
 
-# On Windows, multiprocessing with spawn requires num_workers=0 or proper __main__ guard
-# On Linux/TACC, we can use more workers for better performance
-if sys.platform == 'win32':
-    NUM_WORKERS = 0
-    print("Windows detected: Setting num_workers=0 to avoid multiprocessing issues.")
-elif device == "cuda" and torch.cuda.is_available():
-    # On Linux/TACC with GPU, use more workers for better data loading performance
-    # But cap at 4 to avoid overwhelming the system
-    if NUM_WORKERS == 0:
-        NUM_WORKERS = min(4, os.cpu_count() or 4)
-        print(f"Linux/TACC detected with GPU: Setting num_workers={NUM_WORKERS} for better performance.")
+# Base batch size per GPU (adjust based on GPU memory)
+if gpu_memory < 8:
+    BATCH_SIZE_PER_GPU = 2
+elif gpu_memory < 16:
+    BATCH_SIZE_PER_GPU = 4
+else:
+    BATCH_SIZE_PER_GPU = 8
+
+# Use per-GPU batch size for DataLoader (PyTorch will handle multi-GPU distribution)
+BATCH_SIZE = BATCH_SIZE_PER_GPU
+
+# Set num_workers for data loading (use multiple workers on Linux/TACC)
+NUM_WORKERS = min(8, os.cpu_count() or 8)  # Use up to 8 workers for faster data loading
+
+print(f"GPU Configuration:")
+print(f"  Number of GPUs: {num_gpus}")
+print(f"  GPU memory per device: {gpu_memory:.1f}GB")
+print(f"  Batch size per GPU: {BATCH_SIZE_PER_GPU}")
+print(f"  Effective total batch size (across all GPUs): {BATCH_SIZE_PER_GPU * num_gpus}")
+print(f"  DataLoader workers: {NUM_WORKERS}")
 
 train_loader = DataLoader(
     train_dataset,
@@ -531,6 +537,7 @@ train_loader = DataLoader(
     shuffle=True,
     num_workers=NUM_WORKERS,
     collate_fn=collate_fn,
+    pin_memory=True,  # Faster GPU transfer
 )
 val_loader = DataLoader(
     val_dataset,
@@ -538,6 +545,7 @@ val_loader = DataLoader(
     shuffle=False,
     num_workers=NUM_WORKERS,
     collate_fn=collate_fn,
+    pin_memory=True,  # Faster GPU transfer
 )
 
 # ----------------------------------------------------------------------
@@ -548,15 +556,14 @@ print("GPU/CUDA Diagnostics:")
 print("=" * 60)
 print(f"PyTorch version: {torch.__version__}")
 print(f"CUDA available: {torch.cuda.is_available()}")
-if torch.cuda.is_available():
-    print(f"CUDA version: {torch.version.cuda}")
-    print(f"Number of GPUs: {torch.cuda.device_count()}")
-    for i in range(torch.cuda.device_count()):
-        print(f"  GPU {i}: {torch.cuda.get_device_name(i)}")
-        props = torch.cuda.get_device_properties(i)
-        print(f"    Memory: {props.total_memory / 1e9:.2f} GB")
-else:
-    print("⚠️  WARNING: CUDA not available! Training will be VERY SLOW on CPU.")
+if not torch.cuda.is_available():
+    raise RuntimeError("CUDA is not available! GPU training is required.")
+print(f"CUDA version: {torch.version.cuda}")
+print(f"Number of GPUs: {torch.cuda.device_count()}")
+for i in range(torch.cuda.device_count()):
+    print(f"  GPU {i}: {torch.cuda.get_device_name(i)}")
+    props = torch.cuda.get_device_properties(i)
+    print(f"    Memory: {props.total_memory / 1e9:.2f} GB")
 print(f"Using device: {device}")
 print("=" * 60)
 
@@ -763,11 +770,13 @@ except Exception as e:
     import traceback
     traceback.print_exc()
 
+# Move model to GPU and enable multi-GPU training if available
 model.to(device)
 
 # Verify and re-fix empty_weight after moving to device (in case it was recreated)
 print("\nVerifying empty_weight after moving model to device...")
 try:
+    # Check model before DataParallel wrapping
     if hasattr(model, 'loss_function') and hasattr(model.loss_function, 'criterion'):
         criterion = model.loss_function.criterion
         if hasattr(criterion, 'empty_weight'):
@@ -786,6 +795,12 @@ try:
                 print("✓ Set empty_weight to None after device move")
 except Exception as e:
     print(f"Could not verify empty_weight after device move: {e}")
+
+# Enable multi-GPU training if multiple GPUs are available
+if num_gpus > 1:
+    print(f"\nEnabling multi-GPU training with {num_gpus} GPUs using DataParallel...")
+    model = nn.DataParallel(model)
+    print("✓ Model wrapped with DataParallel for multi-GPU training")
 
 LEARNING_RATE = 5e-5
 WEIGHT_DECAY = 1e-4
@@ -867,7 +882,9 @@ if token_file.exists():
             "model_name": MODEL_NAME,
             "num_classes": num_classes,
             "epochs": NUM_EPOCHS,
-            "batch_size": BATCH_SIZE,
+            "batch_size_per_gpu": BATCH_SIZE,
+            "num_gpus": num_gpus,
+            "effective_batch_size": BATCH_SIZE * num_gpus,
             "learning_rate": LEARNING_RATE,
             "weight_decay": WEIGHT_DECAY,
             "device": device,
@@ -938,10 +955,13 @@ if __name__ == '__main__':
     print("=" * 60)
     print(f"  Model: {MODEL_NAME}")
     print(f"  Epochs: {NUM_EPOCHS}")
-    print(f"  Batch size: {BATCH_SIZE}")
+    print(f"  Number of GPUs: {num_gpus}")
+    print(f"  Batch size per GPU: {BATCH_SIZE}")
+    print(f"  Effective batch size (total): {BATCH_SIZE * num_gpus}")
     print(f"  Learning rate: {LEARNING_RATE}")
     print(f"  Weight decay: {WEIGHT_DECAY}")
     print(f"  Device: {device}")
+    print(f"  DataLoader workers: {NUM_WORKERS}")
     print(f"  Train samples: {len(train_dataset)}")
     print(f"  Val samples: {len(val_dataset)}")
     print("=" * 60)
@@ -977,7 +997,9 @@ if __name__ == '__main__':
     save_dir.mkdir(parents=True, exist_ok=True)
 
     print(f"Saving model and image processor to {save_dir} ...")
-    model.save_pretrained(save_dir)
+    # If using DataParallel, unwrap the model before saving
+    model_to_save = model.module if hasattr(model, 'module') else model
+    model_to_save.save_pretrained(save_dir)
     image_processor.save_pretrained(save_dir)
 
     # ----------------------------------------------------------------------

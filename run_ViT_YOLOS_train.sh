@@ -3,9 +3,9 @@
 #SBATCH -o Output/out_%j.txt
 #SBATCH -e Error/error_%j.txt
 #SBATCH -p gg                                              # Grace Hopper GPU partition
-#SBATCH -N 1
-#SBATCH -n 1
-#SBATCH -t 08:00:00
+#SBATCH -N 6
+#SBATCH -n 6
+#SBATCH -t 24:00:00
 #SBATCH --mail-type=ALL
 #SBATCH --mail-user='rl37272@my.utexas.edu'
 
@@ -33,7 +33,7 @@ echo "Python version: $(python --version)"
 echo "=========================================="
 
 # ==============================
-# Verify required packages are installed
+# Verify GPU and CUDA availability
 # ==============================
 echo "Verifying required packages..."
 python -c "import torch; import transformers; print(f'PyTorch: {torch.__version__}'); print(f'Transformers: {transformers.__version__}'); print(f'CUDA available: {torch.cuda.is_available()}')" || {
