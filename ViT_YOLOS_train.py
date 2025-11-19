@@ -963,7 +963,14 @@ def run_epoch(dataloader, training=True):
 
     running_loss = 0.0
     n_batches = 0
-
+    total_batches = len(dataloader)
+    
+    # Track time for progress reporting
+    import time
+    start_time = time.time()
+    last_print_time = start_time
+    print_interval = 60  # Print progress every 60 seconds
+    
     # Use tqdm but it will be disabled by environment variable
     loop = tqdm(dataloader, desc="train" if training else "val", leave=False, disable=True)
     for batch_idx, batch in enumerate(loop):
@@ -984,6 +991,24 @@ def run_epoch(dataloader, training=True):
 
             running_loss += loss.item()
             n_batches += 1
+            
+            # Print progress periodically
+            current_time = time.time()
+            if current_time - last_print_time >= print_interval:
+                elapsed = current_time - start_time
+                avg_time_per_batch = elapsed / n_batches
+                remaining_batches = total_batches - n_batches
+                eta_seconds = avg_time_per_batch * remaining_batches
+                eta_hours = eta_seconds / 3600
+                avg_loss = running_loss / n_batches
+                
+                mode = "Training" if training else "Validation"
+                print(f"  {mode}: Batch {batch_idx+1}/{total_batches} | "
+                      f"Loss: {avg_loss:.4f} | "
+                      f"Elapsed: {elapsed/3600:.2f}h | "
+                      f"ETA: {eta_hours:.2f}h", flush=True)
+                last_print_time = current_time
+            
         except Exception as e:
             print(f"Error processing batch {batch_idx}: {e}")
             import traceback
@@ -991,7 +1016,8 @@ def run_epoch(dataloader, training=True):
             raise
 
     epoch_loss = running_loss / max(1, n_batches)
-    return epoch_loss
+    total_time = time.time() - start_time
+    return epoch_loss, total_time
 
 # Wrap main execution in __main__ guard for Windows multiprocessing compatibility
 if __name__ == '__main__':
@@ -1026,14 +1052,16 @@ if __name__ == '__main__':
 
         print(f"Starting training epoch {epoch}...")
         sys.stdout.flush()
-        train_loss = run_epoch(train_loader, training=True)
-        print(f"Training epoch {epoch} complete. Loss: {train_loss:.4f}")
+        train_loss, train_time = run_epoch(train_loader, training=True)
+        train_hours = train_time / 3600
+        print(f"Training epoch {epoch} complete. Loss: {train_loss:.4f}, Time: {train_hours:.2f}h")
         sys.stdout.flush()
         
         print(f"Starting validation epoch {epoch}...")
         sys.stdout.flush()
-        val_loss = run_epoch(val_loader, training=False)
-        print(f"Validation epoch {epoch} complete. Loss: {val_loss:.4f}")
+        val_loss, val_time = run_epoch(val_loader, training=False)
+        val_hours = val_time / 3600
+        print(f"Validation epoch {epoch} complete. Loss: {val_loss:.4f}, Time: {val_hours:.2f}h")
         sys.stdout.flush()
 
         lr_scheduler.step()
@@ -1042,7 +1070,13 @@ if __name__ == '__main__':
         val_losses.append(val_loss)
 
         current_lr = optimizer.param_groups[0]["lr"]
+        total_epoch_time = train_time + val_time
+        total_epoch_hours = total_epoch_time / 3600
+        remaining_epochs = NUM_EPOCHS - epoch
+        estimated_remaining_hours = total_epoch_hours * remaining_epochs
+        
         print(f"Epoch {epoch}/{NUM_EPOCHS} - Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}, LR: {current_lr:.2e}")
+        print(f"  Epoch time: {total_epoch_hours:.2f}h | Estimated remaining: {estimated_remaining_hours:.2f}h")
 
         if neptune_run is not None:
             try:
