@@ -455,7 +455,17 @@ class ExDarkYoloDetectionDataset(Dataset):
 MODEL_NAME = "hustvl/yolos-small"
 
 print(f"Loading image processor and config from '{MODEL_NAME}'...")
-image_processor = AutoImageProcessor.from_pretrained(MODEL_NAME)
+sys.stdout.flush()
+try:
+    image_processor = AutoImageProcessor.from_pretrained(MODEL_NAME)
+    print("✓ Image processor loaded successfully")
+    sys.stdout.flush()
+except Exception as e:
+    print(f"✗ Error loading image processor: {e}")
+    print("This might be due to network issues or Hugging Face Hub access.")
+    import traceback
+    traceback.print_exc()
+    raise
 
 def collate_fn(batch):
     """
@@ -509,28 +519,46 @@ elif torch.cuda.is_available():
         BATCH_SIZE = 8
         print(f"GPU memory: {gpu_memory:.1f}GB. Using batch size 8.")
     
-    # Set num_workers for data loading (use multiple workers on Linux/TACC)
-    NUM_WORKERS = min(8, os.cpu_count() or 8)
+    # Set num_workers for data loading
+    # Use 0 workers on SLURM to avoid multiprocessing hangs (single-threaded is safer)
+    # For local development, you can use multiple workers
+    if os.environ.get('SLURM_JOB_ID') is not None:
+        NUM_WORKERS = 0  # Single-threaded data loading - safest for SLURM
+        print("  Using single-threaded data loading (NUM_WORKERS=0) for SLURM compatibility")
+    else:
+        NUM_WORKERS = min(8, os.cpu_count() or 8)
 else:
     BATCH_SIZE = 2
     NUM_WORKERS = 0
 
+# Create DataLoaders with explicit error handling
+print(f"\nCreating DataLoaders...")
+print(f"  Train dataset size: {len(train_dataset)}")
+print(f"  Val dataset size: {len(val_dataset)}")
+print(f"  Batch size: {BATCH_SIZE}")
+print(f"  Number of workers: {NUM_WORKERS}")
+
+print("Creating train DataLoader...")
 train_loader = DataLoader(
     train_dataset,
     batch_size=BATCH_SIZE,
     shuffle=True,
     num_workers=NUM_WORKERS,
     collate_fn=collate_fn,
-    pin_memory=True,  # Faster GPU transfer
+    pin_memory=True if device == "cuda" else False,  # Only pin memory for GPU
 )
+print("✓ Train DataLoader created")
+
+print("Creating val DataLoader...")
 val_loader = DataLoader(
     val_dataset,
     batch_size=BATCH_SIZE,
     shuffle=False,
     num_workers=NUM_WORKERS,
     collate_fn=collate_fn,
-    pin_memory=True,  # Faster GPU transfer
+    pin_memory=True if device == "cuda" else False,  # Only pin memory for GPU
 )
+print("✓ Val DataLoader created")
 
 # ----------------------------------------------------------------------
 # 7. Model loading and setup
@@ -572,8 +600,39 @@ if device == 'cpu':
         print("   Please run: bash fix_venv_tacc.sh")
 
 print(f"\nLoading YOLOS model '{MODEL_NAME}' with {num_classes} classes...")
+print("This may take a few minutes if downloading from Hugging Face Hub...")
+sys.stdout.flush()
+
 # Load model with original config first to get pretrained weights
-model = YolosForObjectDetection.from_pretrained(MODEL_NAME)
+# Add timeout and better error handling for Hugging Face downloads
+try:
+    import os
+    # Set Hugging Face cache directory to avoid permission issues
+    hf_cache_dir = os.environ.get('HF_HOME', os.path.expanduser('~/.cache/huggingface'))
+    print(f"Hugging Face cache directory: {hf_cache_dir}")
+    sys.stdout.flush()
+    
+    # Load model with explicit timeout and error handling
+    print("Downloading/loading model from Hugging Face Hub...")
+    sys.stdout.flush()
+    
+    model = YolosForObjectDetection.from_pretrained(
+        MODEL_NAME,
+        cache_dir=hf_cache_dir,
+        local_files_only=False,  # Allow downloading if not cached
+    )
+    print("✓ Model loaded successfully")
+    sys.stdout.flush()
+except Exception as e:
+    print(f"✗ Error loading model: {e}")
+    print("\nTroubleshooting:")
+    print("  1. Check internet connectivity (Hugging Face Hub access)")
+    print("  2. Check disk space in cache directory")
+    print("  3. Try setting HF_HOME environment variable")
+    print("  4. Check if model name is correct:", MODEL_NAME)
+    import traceback
+    traceback.print_exc()
+    raise
 
 # Now update the config and resize the classification head
 config = model.config
@@ -791,59 +850,67 @@ optimizer = torch.optim.AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay
 lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=NUM_EPOCHS)
 
 # Test dataset loading and model forward pass before training
-print("\nTesting dataset loading and model...")
-try:
-    test_sample = train_dataset[0]
-    test_batch = collate_fn([test_sample])
-    print(f"✓ Dataset test successful:")
-    print(f"  - Image shape: {test_batch['pixel_values'].shape}")
-    print(f"  - Number of labels in batch: {len(test_batch['labels'])}")
-    if len(test_batch['labels']) > 0:
-        print(f"  - Label keys: {list(test_batch['labels'][0].keys())}")
-    
-    # Test model forward pass
-    print("\nTesting model forward pass...")
-    # One final attempt to fix empty_weight before test
+# Skip this test if running in SLURM to avoid hanging (test will happen in training loop anyway)
+SKIP_FORWARD_TEST = os.environ.get('SLURM_JOB_ID') is not None
+if SKIP_FORWARD_TEST:
+    print("\nSkipping forward pass test (running in SLURM - will test during training)...")
+else:
+    print("\nTesting dataset loading and model...")
     try:
-        if hasattr(model, 'loss_function') and hasattr(model.loss_function, 'criterion'):
-            if hasattr(model.loss_function.criterion, 'empty_weight'):
-                weight = model.loss_function.criterion.empty_weight
-                if isinstance(weight, torch.Tensor) and weight.shape[0] != new_out_features:
-                    model.loss_function.criterion.empty_weight = None
-                    print("Fixed empty_weight to None before test")
-    except:
-        pass
-    
-    model.eval()
-    with torch.no_grad():
-        pixel_values = test_batch['pixel_values'].to(device)
-        labels = [{k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in t.items()} for t in test_batch['labels']]
-        test_outputs = model(pixel_values=pixel_values, labels=labels)
-        print(f"✓ Model forward pass successful:")
-        print(f"  - Loss: {test_outputs.loss.item():.4f}")
-        print(f"  - Logits shape: {test_outputs.logits.shape}")
-        print(f"  - Pred boxes shape: {test_outputs.pred_boxes.shape}")
-    model.train()  # Set back to training mode
-except Exception as e:
-    error_msg = str(e)
-    if "empty_weight" in error_msg or "weight tensor" in error_msg:
-        print(f"⚠️  Forward pass test failed due to empty_weight issue: {e}")
-        print("This is likely due to the loss function's empty_weight not being properly updated.")
-        print("Attempting to fix and continue...")
-        # Try one more time to fix it
+        test_sample = train_dataset[0]
+        test_batch = collate_fn([test_sample])
+        print(f"✓ Dataset test successful:")
+        print(f"  - Image shape: {test_batch['pixel_values'].shape}")
+        print(f"  - Number of labels in batch: {len(test_batch['labels'])}")
+        if len(test_batch['labels']) > 0:
+            print(f"  - Label keys: {list(test_batch['labels'][0].keys())}")
+        
+        # Test model forward pass
+        print("\nTesting model forward pass...")
+        # One final attempt to fix empty_weight before test
         try:
             if hasattr(model, 'loss_function') and hasattr(model.loss_function, 'criterion'):
-                model.loss_function.criterion.empty_weight = None
-                print("Set empty_weight to None. Training will proceed, but forward pass test is skipped.")
+                if hasattr(model.loss_function.criterion, 'empty_weight'):
+                    weight = model.loss_function.criterion.empty_weight
+                    if isinstance(weight, torch.Tensor) and weight.shape[0] != new_out_features:
+                        model.loss_function.criterion.empty_weight = None
+                        print("Fixed empty_weight to None before test")
         except:
             pass
-        print("⚠️  Warning: Forward pass test skipped. Training may still work, but monitor for errors.")
-    else:
-        print(f"✗ Test failed: {e}")
-        import traceback
-        traceback.print_exc()
-        print("\nThis error is not related to empty_weight. Please check the error above.")
-        raise
+        
+        model.eval()
+        with torch.no_grad():
+            pixel_values = test_batch['pixel_values'].to(device)
+            labels = [{k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in t.items()} for t in test_batch['labels']]
+            test_outputs = model(pixel_values=pixel_values, labels=labels)
+            print(f"✓ Model forward pass successful:")
+            print(f"  - Loss: {test_outputs.loss.item():.4f}")
+            print(f"  - Logits shape: {test_outputs.logits.shape}")
+            print(f"  - Pred boxes shape: {test_outputs.pred_boxes.shape}")
+        model.train()  # Set back to training mode
+    except Exception as e:
+        error_msg = str(e)
+        if "empty_weight" in error_msg or "weight tensor" in error_msg:
+            print(f"⚠️  Forward pass test failed due to empty_weight issue: {e}")
+            print("This is likely due to the loss function's empty_weight not being properly updated.")
+            print("Attempting to fix and continue...")
+            # Try one more time to fix it
+            try:
+                if hasattr(model, 'loss_function') and hasattr(model.loss_function, 'criterion'):
+                    model.loss_function.criterion.empty_weight = None
+                    print("Set empty_weight to None. Training will proceed, but forward pass test is skipped.")
+            except:
+                pass
+            print("⚠️  Warning: Forward pass test skipped. Training may still work, but monitor for errors.")
+        else:
+            print(f"✗ Test failed: {e}")
+            import traceback
+            traceback.print_exc()
+            print("\nThis error is not related to empty_weight. Please check the error above.")
+            raise
+
+print("=" * 60)
+print("All setup complete. Ready to start training...")
 print("=" * 60)
 
 # ----------------------------------------------------------------------
@@ -928,9 +995,13 @@ def run_epoch(dataloader, training=True):
 
 # Wrap main execution in __main__ guard for Windows multiprocessing compatibility
 if __name__ == '__main__':
+    import sys
+    sys.stdout.flush()  # Ensure output is flushed immediately
+    
     print("=" * 60)
     print("Starting YOLOS training on ExDark...")
     print("=" * 60)
+    sys.stdout.flush()
 
     print("\n" + "=" * 60)
     print("Training Configuration:")
@@ -951,9 +1022,19 @@ if __name__ == '__main__':
 
     for epoch in range(1, NUM_EPOCHS + 1):
         print(f"\nEpoch {epoch}/{NUM_EPOCHS}")
+        sys.stdout.flush()
 
+        print(f"Starting training epoch {epoch}...")
+        sys.stdout.flush()
         train_loss = run_epoch(train_loader, training=True)
+        print(f"Training epoch {epoch} complete. Loss: {train_loss:.4f}")
+        sys.stdout.flush()
+        
+        print(f"Starting validation epoch {epoch}...")
+        sys.stdout.flush()
         val_loss = run_epoch(val_loader, training=False)
+        print(f"Validation epoch {epoch} complete. Loss: {val_loss:.4f}")
+        sys.stdout.flush()
 
         lr_scheduler.step()
 
