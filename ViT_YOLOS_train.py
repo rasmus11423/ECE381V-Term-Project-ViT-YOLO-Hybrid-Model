@@ -500,36 +500,22 @@ val_dataset = ExDarkYoloDetectionDataset(
 )
 
 # ----------------------------------------------------------------------
-# 6.5. Adjust batch size based on device (GPU or CPU) - matching YOLOv5 approach
+# 6.5. Set batch size to 1000 as requested
 # ----------------------------------------------------------------------
-if device == 'cpu':
-    BATCH_SIZE = 2
-    NUM_WORKERS = 0
-    print("Warning: Using CPU. Batch size set to 2 for compatibility.")
-elif torch.cuda.is_available():
-    # Auto-detect batch size based on GPU memory (matching YOLOv5 script)
-    gpu_memory = torch.cuda.get_device_properties(0).total_memory / 1e9  # GB
-    if gpu_memory < 4:
-        BATCH_SIZE = 2
-        print(f"GPU memory: {gpu_memory:.1f}GB. Using batch size 2.")
-    elif gpu_memory < 8:
-        BATCH_SIZE = 4
-        print(f"GPU memory: {gpu_memory:.1f}GB. Using batch size 4.")
-    else:
-        BATCH_SIZE = 8
-        print(f"GPU memory: {gpu_memory:.1f}GB. Using batch size 8.")
-    
-    # Set num_workers for data loading
-    # Use 0 workers on SLURM to avoid multiprocessing hangs (single-threaded is safer)
-    # For local development, you can use multiple workers
-    if os.environ.get('SLURM_JOB_ID') is not None:
-        NUM_WORKERS = 0  # Single-threaded data loading - safest for SLURM
-        print("  Using single-threaded data loading (NUM_WORKERS=0) for SLURM compatibility")
-    else:
-        NUM_WORKERS = min(8, os.cpu_count() or 8)
+BATCH_SIZE = 1000
+print(f"Batch size set to {BATCH_SIZE} as requested.")
+print(f"⚠️  WARNING: Batch size {BATCH_SIZE} is very large for object detection!")
+print(f"   Typical batch sizes are 4-32. You may encounter OOM (Out of Memory) errors.")
+print(f"   If training fails with CUDA OOM, reduce BATCH_SIZE to a smaller value (e.g., 8, 16, or 32).")
+
+# Set num_workers for data loading
+# Use 0 workers on SLURM to avoid multiprocessing hangs (single-threaded is safer)
+# For local development, you can use multiple workers
+if os.environ.get('SLURM_JOB_ID') is not None:
+    NUM_WORKERS = 0  # Single-threaded data loading - safest for SLURM
+    print("  Using single-threaded data loading (NUM_WORKERS=0) for SLURM compatibility")
 else:
-    BATCH_SIZE = 2
-    NUM_WORKERS = 0
+    NUM_WORKERS = min(8, os.cpu_count() or 8)
 
 # Create DataLoaders with explicit error handling
 print(f"\nCreating DataLoaders...")
@@ -922,10 +908,19 @@ if token_file.exists():
     try:
         with open(token_file, "r") as f:
             api_token = f.read().strip()
-        neptune_run = neptune.init_run(
-            project="ECE381V-Deep-Learning/ECE381V-Term-Project-ViT-YOLO-Hybrid-Model",
-            api_token=api_token,
-        )
+        # Try to initialize with async mode for better performance
+        try:
+            neptune_run = neptune.init_run(
+                project="ECE381V-Deep-Learning/ECE381V-Term-Project-ViT-YOLO-Hybrid-Model",
+                api_token=api_token,
+                mode="async",  # Use async mode for better performance and real-time updates
+            )
+        except TypeError:
+            # If mode parameter is not supported, initialize without it
+            neptune_run = neptune.init_run(
+                project="ECE381V-Deep-Learning/ECE381V-Term-Project-ViT-YOLO-Hybrid-Model",
+                api_token=api_token,
+            )
         neptune_run["parameters"] = {
             "model_name": MODEL_NAME,
             "num_classes": num_classes,
@@ -940,9 +935,11 @@ if token_file.exists():
             neptune_run["parameters/num_gpus"] = num_gpus
             neptune_run["parameters/effective_batch_size"] = BATCH_SIZE * num_gpus
         neptune_run["parameters/classes"] = ", ".join(Classes)
-        print("Neptune logging enabled.")
+        print("Neptune logging enabled with async mode for real-time updates.")
     except Exception as e:
         print(f"Warning: could not initialize Neptune: {e}")
+        import traceback
+        traceback.print_exc()
 else:
     print("Neptune token file not found; running without Neptune logging.")
 
@@ -955,21 +952,59 @@ os.environ['TQDM_DISABLE'] = '1'
 train_losses = []
 val_losses = []
 
-def run_epoch(dataloader, training=True):
+def compute_accuracy(outputs, labels):
+    """
+    Compute classification accuracy from model outputs.
+    For object detection, we compute accuracy based on predicted vs ground truth class labels.
+    """
+    try:
+        # Get predicted class labels from logits
+        # outputs.logits shape: [batch_size, num_queries, num_classes + 1]
+        logits = outputs.logits
+        pred_classes = torch.argmax(logits, dim=-1)  # [batch_size, num_queries]
+        
+        # Get ground truth class labels
+        # labels is a list of dicts, each with 'class_labels' tensor
+        total_correct = 0
+        total_labels = 0
+        
+        for i, label_dict in enumerate(labels):
+            if 'class_labels' in label_dict:
+                gt_classes = label_dict['class_labels']  # [num_objects]
+                if len(gt_classes) > 0:
+                    # For each ground truth object, find the best matching prediction
+                    # Simple approach: check if any prediction matches the ground truth class
+                    batch_pred = pred_classes[i]  # [num_queries]
+                    for gt_class in gt_classes:
+                        total_labels += 1
+                        gt_class_val = gt_class.item() if isinstance(gt_class, torch.Tensor) else gt_class
+                        # Check if gt_class is in the predicted classes using tensor operations
+                        if (batch_pred == gt_class_val).any():
+                            total_correct += 1
+        
+        if total_labels > 0:
+            accuracy = total_correct / total_labels
+        else:
+            accuracy = 0.0
+        return accuracy
+    except Exception as e:
+        # If accuracy computation fails, return 0.0
+        return 0.0
+
+def run_epoch(dataloader, training=True, epoch_num=0, neptune_run=None):
     if training:
         model.train()
     else:
         model.eval()
 
     running_loss = 0.0
+    running_accuracy = 0.0
     n_batches = 0
     total_batches = len(dataloader)
     
     # Track time for progress reporting
     import time
     start_time = time.time()
-    last_print_time = start_time
-    print_interval = 60  # Print progress every 60 seconds
     
     # Use tqdm but it will be disabled by environment variable
     loop = tqdm(dataloader, desc="train" if training else "val", leave=False, disable=True)
@@ -984,30 +1019,54 @@ def run_epoch(dataloader, training=True):
             with torch.set_grad_enabled(training):
                 outputs = model(pixel_values=pixel_values, labels=labels)
                 loss = outputs.loss  # scalar
+                
+                # Compute accuracy
+                accuracy = compute_accuracy(outputs, labels)
+                
                 if training:
                     loss.backward()
                     torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
                     optimizer.step()
 
             running_loss += loss.item()
+            running_accuracy += accuracy
             n_batches += 1
             
-            # Print progress periodically
-            current_time = time.time()
-            if current_time - last_print_time >= print_interval:
-                elapsed = current_time - start_time
-                avg_time_per_batch = elapsed / n_batches
-                remaining_batches = total_batches - n_batches
-                eta_seconds = avg_time_per_batch * remaining_batches
-                eta_hours = eta_seconds / 3600
-                avg_loss = running_loss / n_batches
-                
-                mode = "Training" if training else "Validation"
-                print(f"  {mode}: Batch {batch_idx+1}/{total_batches} | "
-                      f"Loss: {avg_loss:.4f} | "
-                      f"Elapsed: {elapsed/3600:.2f}h | "
-                      f"ETA: {eta_hours:.2f}h", flush=True)
-                last_print_time = current_time
+            # Compute averages
+            avg_loss = running_loss / n_batches
+            avg_accuracy = running_accuracy / n_batches
+            
+            # Calculate ETA
+            elapsed = time.time() - start_time
+            avg_time_per_batch = elapsed / n_batches
+            remaining_batches = total_batches - n_batches
+            eta_seconds = avg_time_per_batch * remaining_batches
+            eta_hours = eta_seconds / 3600
+            
+            # Print for every batch
+            mode = "Training" if training else "Validation"
+            print(f"  {mode}: Batch {batch_idx+1}/{total_batches} | "
+                  f"Loss: {avg_loss:.4f} | "
+                  f"Accuracy: {avg_accuracy:.4f} | "
+                  f"Elapsed: {elapsed/3600:.2f}h | "
+                  f"ETA: {eta_hours:.2f}h", flush=True)
+            
+            # Log to Neptune every batch for real-time visibility
+            if neptune_run is not None:
+                try:
+                    metric_prefix = "train" if training else "val"
+                    # Calculate global batch index across all epochs
+                    global_batch_idx = (epoch_num - 1) * total_batches + batch_idx + 1
+                    # Use append() for series logging - Neptune will track these in real-time
+                    neptune_run[f"{metric_prefix}/batch_loss"].append(avg_loss)
+                    neptune_run[f"{metric_prefix}/batch_accuracy"].append(avg_accuracy)
+                    neptune_run[f"{metric_prefix}/batch_number"].append(global_batch_idx)
+                    # Sync every 10 batches to reduce overhead while maintaining visibility
+                    if (batch_idx + 1) % 10 == 0:
+                        neptune_run.sync()
+                except Exception as e:
+                    # Don't stop training if Neptune logging fails
+                    pass
             
         except Exception as e:
             print(f"Error processing batch {batch_idx}: {e}")
@@ -1016,8 +1075,9 @@ def run_epoch(dataloader, training=True):
             raise
 
     epoch_loss = running_loss / max(1, n_batches)
+    epoch_accuracy = running_accuracy / max(1, n_batches)
     total_time = time.time() - start_time
-    return epoch_loss, total_time
+    return epoch_loss, epoch_accuracy, total_time
 
 # Wrap main execution in __main__ guard for Windows multiprocessing compatibility
 if __name__ == '__main__':
@@ -1046,28 +1106,33 @@ if __name__ == '__main__':
     print(f"  Val samples: {len(val_dataset)}")
     print("=" * 60)
 
+    train_accuracies = []
+    val_accuracies = []
+    
     for epoch in range(1, NUM_EPOCHS + 1):
         print(f"\nEpoch {epoch}/{NUM_EPOCHS}")
         sys.stdout.flush()
 
         print(f"Starting training epoch {epoch}...")
         sys.stdout.flush()
-        train_loss, train_time = run_epoch(train_loader, training=True)
+        train_loss, train_accuracy, train_time = run_epoch(train_loader, training=True, epoch_num=epoch, neptune_run=neptune_run)
         train_hours = train_time / 3600
-        print(f"Training epoch {epoch} complete. Loss: {train_loss:.4f}, Time: {train_hours:.2f}h")
+        print(f"Training epoch {epoch} complete. Loss: {train_loss:.4f}, Accuracy: {train_accuracy:.4f}, Time: {train_hours:.2f}h")
         sys.stdout.flush()
         
         print(f"Starting validation epoch {epoch}...")
         sys.stdout.flush()
-        val_loss, val_time = run_epoch(val_loader, training=False)
+        val_loss, val_accuracy, val_time = run_epoch(val_loader, training=False, epoch_num=epoch, neptune_run=neptune_run)
         val_hours = val_time / 3600
-        print(f"Validation epoch {epoch} complete. Loss: {val_loss:.4f}, Time: {val_hours:.2f}h")
+        print(f"Validation epoch {epoch} complete. Loss: {val_loss:.4f}, Accuracy: {val_accuracy:.4f}, Time: {val_hours:.2f}h")
         sys.stdout.flush()
 
         lr_scheduler.step()
 
         train_losses.append(train_loss)
         val_losses.append(val_loss)
+        train_accuracies.append(train_accuracy)
+        val_accuracies.append(val_accuracy)
 
         current_lr = optimizer.param_groups[0]["lr"]
         total_epoch_time = train_time + val_time
@@ -1075,14 +1140,19 @@ if __name__ == '__main__':
         remaining_epochs = NUM_EPOCHS - epoch
         estimated_remaining_hours = total_epoch_hours * remaining_epochs
         
-        print(f"Epoch {epoch}/{NUM_EPOCHS} - Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}, LR: {current_lr:.2e}")
+        print(f"Epoch {epoch}/{NUM_EPOCHS} - Train Loss: {train_loss:.4f}, Train Acc: {train_accuracy:.4f}, Val Loss: {val_loss:.4f}, Val Acc: {val_accuracy:.4f}, LR: {current_lr:.2e}")
         print(f"  Epoch time: {total_epoch_hours:.2f}h | Estimated remaining: {estimated_remaining_hours:.2f}h")
 
         if neptune_run is not None:
             try:
                 neptune_run["train/loss"].append(train_loss)
+                neptune_run["train/accuracy"].append(train_accuracy)
                 neptune_run["val/loss"].append(val_loss)
+                neptune_run["val/accuracy"].append(val_accuracy)
                 neptune_run["train/lr"].append(optimizer.param_groups[0]["lr"])
+                neptune_run["epoch"].append(epoch)
+                # Sync to ensure data is sent to Neptune
+                neptune_run.sync()
             except Exception as e:
                 print(f"Warning: Neptune logging error: {e}")
 
@@ -1103,9 +1173,12 @@ if __name__ == '__main__':
     # ----------------------------------------------------------------------
     # 11. Plot training curves and (optionally) upload to Neptune
     # ----------------------------------------------------------------------
-    plot_path = save_dir / "training_curves_yolos_exdark.png"
+    plot_path_loss = save_dir / "training_curves_yolos_exdark_loss.png"
+    plot_path_acc = save_dir / "training_curves_yolos_exdark_accuracy.png"
 
     epochs = np.arange(1, len(train_losses) + 1)
+    
+    # Plot loss curves
     plt.figure(figsize=(8, 5))
     plt.plot(epochs, train_losses, marker="o", label="Train loss")
     plt.plot(epochs, val_losses, marker="s", label="Val loss")
@@ -1115,16 +1188,32 @@ if __name__ == '__main__':
     plt.grid(True)
     plt.legend()
     plt.tight_layout()
-    plt.savefig(plot_path, dpi=150, bbox_inches="tight")
+    plt.savefig(plot_path_loss, dpi=150, bbox_inches="tight")
+    plt.close()
+    
+    # Plot accuracy curves
+    plt.figure(figsize=(8, 5))
+    plt.plot(epochs, train_accuracies, marker="o", label="Train accuracy")
+    plt.plot(epochs, val_accuracies, marker="s", label="Val accuracy")
+    plt.xlabel("Epoch")
+    plt.ylabel("Accuracy")
+    plt.title("YOLOS (ViT) on ExDark - Training/Validation Accuracy")
+    plt.grid(True)
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig(plot_path_acc, dpi=150, bbox_inches="tight")
     plt.close()
 
-    print(f"Training curves saved to: {plot_path}")
+    print(f"Training curves saved to: {plot_path_loss} and {plot_path_acc}")
 
     if neptune_run is not None:
         try:
-            neptune_run["plots/loss_curves"].upload(str(plot_path))
+            neptune_run["plots/loss_curves"].upload(str(plot_path_loss))
+            neptune_run["plots/accuracy_curves"].upload(str(plot_path_acc))
             neptune_run["final/train_loss"] = train_losses[-1]
             neptune_run["final/val_loss"] = val_losses[-1]
+            neptune_run["final/train_accuracy"] = train_accuracies[-1]
+            neptune_run["final/val_accuracy"] = val_accuracies[-1]
             neptune_run.stop()
             print("Neptune run closed.")
         except Exception as e:
