@@ -5,7 +5,7 @@
 #SBATCH -p gg                                              # Grace Hopper GPU partition
 #SBATCH -N 6
 #SBATCH -n 6
-#SBATCH -t 72:00:00
+#SBATCH -t 70:00:00
 #SBATCH --mail-type=ALL
 #SBATCH --mail-user='rl37272@my.utexas.edu'
 
