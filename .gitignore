@@ -75,19 +75,19 @@ data/
 datasets/
 Data/
 GroundTruth/
-Output/
 *.csv
 *.json
 *.parquet
 *.npy
 *.npz
 
+# Explicitly track Output folder (contains training outputs and logs)
+!Output/
+
 # Logs
 *.log
 logs/
 *.out
-Output/
-Error/
 
 # OS files
 .DS_Store

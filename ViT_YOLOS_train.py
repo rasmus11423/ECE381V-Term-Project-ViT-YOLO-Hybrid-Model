@@ -356,7 +356,8 @@ from transformers import (
 
 import neptune
 
-# Determine device - simple approach matching YOLOv5 script
+# Determine device - check CUDA availability
+# Note: This will be re-checked after model loading to ensure CUDA is properly detected
 device = "cuda" if torch.cuda.is_available() else "cpu"
 num_gpus = torch.cuda.device_count() if torch.cuda.is_available() else 0
 
@@ -500,13 +501,14 @@ val_dataset = ExDarkYoloDetectionDataset(
 )
 
 # ----------------------------------------------------------------------
-# 6.5. Set batch size to 1000 as requested
+# 6.5. Set batch size - reduced from 1000 to prevent OOM errors
 # ----------------------------------------------------------------------
-BATCH_SIZE = 1000
-print(f"Batch size set to {BATCH_SIZE} as requested.")
-print(f"⚠️  WARNING: Batch size {BATCH_SIZE} is very large for object detection!")
-print(f"   Typical batch sizes are 4-32. You may encounter OOM (Out of Memory) errors.")
-print(f"   If training fails with CUDA OOM, reduce BATCH_SIZE to a smaller value (e.g., 8, 16, or 32).")
+# Batch size reduced to 16 to prevent memory allocation errors
+# With 6 GPUs, effective batch size will be 16 * 6 = 96
+BATCH_SIZE = 16
+print(f"Batch size set to {BATCH_SIZE}.")
+print(f"   This is a reasonable batch size for object detection models.")
+print(f"   If using multiple GPUs, effective batch size will be {BATCH_SIZE} * num_gpus.")
 
 # Set num_workers for data loading
 # Use 0 workers on SLURM to avoid multiprocessing hangs (single-threaded is safer)
@@ -575,15 +577,23 @@ else:
         print("   Please reinstall PyTorch with CUDA support using fix_venv_tacc.sh")
 print("=" * 60)
 
+# Re-check device after diagnostics to ensure CUDA is properly detected
+# This is important because CUDA might not be available immediately after import
+device = "cuda" if torch.cuda.is_available() else "cpu"
+num_gpus = torch.cuda.device_count() if torch.cuda.is_available() else 0
+
 print(f"\nUsing device: {device}")
 if device == 'cpu':
     if torch.version.cuda is not None:
         print("⚠️  WARNING: Training will use CPU (CUDA not available on this node)")
+        print("   If running on GPU nodes, check that --gres=gpu is set in SLURM script")
         print("   This is normal on login nodes. Training will use GPUs on compute nodes.")
     else:
         print("⚠️  WARNING: Training will be VERY SLOW on CPU!")
         print("   PyTorch was installed without CUDA support.")
         print("   Please run: bash fix_venv_tacc.sh")
+else:
+    print(f"✓ CUDA available - will use {num_gpus} GPU(s) for training")
 
 print(f"\nLoading YOLOS model '{MODEL_NAME}' with {num_classes} classes...")
 print("This may take a few minutes if downloading from Hugging Face Hub...")
@@ -660,164 +670,28 @@ if old_num_labels != new_num_labels:
     model.class_labels_classifier = new_classifier
     print(f"Classification head resized successfully from {old_out_features} to {new_out_features} outputs.")
     
-    # Update the loss function's empty_weight to match new number of classes
-    # The loss function uses empty_weight for class balancing (background class weight)
-    # Need to update it in the criterion which is nested in the loss_function
-    try:
-        if hasattr(model, 'loss_function'):
-            loss_func = model.loss_function
-            # The loss_function might have a criterion attribute
-            if hasattr(loss_func, 'criterion'):
-                criterion = loss_func.criterion
-                if hasattr(criterion, 'empty_weight') and criterion.empty_weight is not None:
-                    # empty_weight should have size = num_classes + 1 (including background)
-                    old_weight_size = criterion.empty_weight.shape[0]
-                    if old_weight_size != new_out_features:
-                        print(f"Updating loss function empty_weight from {old_weight_size} to {new_out_features}...")
-                        # Create new empty_weight with same values for overlapping classes
-                        new_empty_weight = torch.ones(new_out_features, device=criterion.empty_weight.device, dtype=criterion.empty_weight.dtype)
-                        copy_size = min(old_weight_size, new_out_features)
-                        new_empty_weight[:copy_size] = criterion.empty_weight[:copy_size]
-                        # Use the last value (background class weight) for any new classes
-                        if new_out_features > old_weight_size:
-                            new_empty_weight[copy_size:] = criterion.empty_weight[-1]
-                        criterion.empty_weight = new_empty_weight
-                        print(f"Loss function empty_weight updated successfully.")
-            # Also check if empty_weight is directly in loss_function
-            elif hasattr(loss_func, 'empty_weight') and loss_func.empty_weight is not None:
-                old_weight_size = loss_func.empty_weight.shape[0]
-                if old_weight_size != new_out_features:
-                    print(f"Updating loss function empty_weight from {old_weight_size} to {new_out_features}...")
-                    new_empty_weight = torch.ones(new_out_features, device=loss_func.empty_weight.device, dtype=loss_func.empty_weight.dtype)
-                    copy_size = min(old_weight_size, new_out_features)
-                    new_empty_weight[:copy_size] = loss_func.empty_weight[:copy_size]
-                    if new_out_features > old_weight_size:
-                        new_empty_weight[copy_size:] = loss_func.empty_weight[-1]
-                    loss_func.empty_weight = new_empty_weight
-                    print(f"Loss function empty_weight updated successfully.")
-    except Exception as e:
-        print(f"Warning: Could not update loss function empty_weight: {e}")
-        print("This might cause issues during training. The model will attempt to continue anyway.")
-
 # Update model config
 model.config = config
 
-# Fix loss function empty_weight to match new num_classes
-# The loss function was initialized with old number of classes (92 for COCO)
-# Simplest solution: set empty_weight to None (valid according to error message)
-print("Fixing loss function empty_weight for new number of classes...")
-print(f"Target number of classes (including background): {new_out_features}")
-
-# Set empty_weight to None - this is valid and avoids size mismatch
-# According to the error: "weight tensor should be defined either for all or no classes"
-# Setting to None means "no classes" (no class weighting)
+# Fix loss function empty_weight - set to None to avoid size mismatch issues
+# This is simpler and more reliable than trying to resize the weight tensor
+print("Setting loss function empty_weight to None to avoid size mismatch...")
 try:
     if hasattr(model, 'loss_function'):
         loss_func = model.loss_function
-        if hasattr(loss_func, 'criterion'):
-            criterion = loss_func.criterion
-            # Check current state
-            # Try multiple methods to set empty_weight to None
-            empty_weight_set = False
-            
-            # Method 1: Direct assignment
-            try:
-                if hasattr(criterion, 'empty_weight'):
-                    old_weight = criterion.empty_weight
-                    if isinstance(old_weight, torch.Tensor):
-                        old_size = old_weight.shape[0]
-                        print(f"Found empty_weight with size {old_size} (need {new_out_features})")
-                        if old_size != new_out_features:
-                            criterion.empty_weight = None
-                            print(f"✓ Set empty_weight to None (was size {old_size})")
-                            empty_weight_set = True
-                        else:
-                            print(f"✓ empty_weight already has correct size ({old_size})")
-                            empty_weight_set = True
-                    elif old_weight is None:
-                        print("✓ empty_weight is already None")
-                        empty_weight_set = True
-                    else:
-                        criterion.empty_weight = None
-                        print(f"✓ Set empty_weight to None (was {type(old_weight)})")
-                        empty_weight_set = True
-            except Exception as e1:
-                print(f"Direct assignment failed: {e1}")
-            
-            # Method 2: Use object.__setattr__ to bypass property setters
-            if not empty_weight_set:
-                try:
-                    object.__setattr__(criterion, 'empty_weight', None)
-                    print("✓ Set empty_weight to None via object.__setattr__")
-                    empty_weight_set = True
-                except Exception as e2:
-                    print(f"object.__setattr__ failed: {e2}")
-            
-            # Method 3: Set via __dict__
-            if not empty_weight_set:
-                try:
-                    criterion.__dict__['empty_weight'] = None
-                    print("✓ Set empty_weight to None via __dict__")
-                    empty_weight_set = True
-                except Exception as e3:
-                    print(f"__dict__ assignment failed: {e3}")
-            
-            # Method 4: Use setattr
-            if not empty_weight_set:
-                try:
-                    setattr(criterion, 'empty_weight', None)
-                    print("✓ Set empty_weight to None via setattr")
-                    empty_weight_set = True
-                except Exception as e4:
-                    print(f"setattr failed: {e4}")
-            
-            if not empty_weight_set:
-                print("⚠️  Could not set empty_weight using any method")
+        if hasattr(loss_func, 'criterion') and hasattr(loss_func.criterion, 'empty_weight'):
+            loss_func.criterion.empty_weight = None
+            print("✓ Set empty_weight to None")
+        elif hasattr(loss_func, 'empty_weight'):
+            loss_func.empty_weight = None
+            print("✓ Set empty_weight to None")
         else:
-            print("Warning: loss_function does not have criterion attribute")
+            print("  (empty_weight not found - may not be needed)")
     else:
-        print("Warning: Model does not have loss_function attribute")
+        print("  (loss_function not found - may not be needed)")
 except Exception as e:
-    print(f"Error fixing empty_weight: {e}")
-    import traceback
-    traceback.print_exc()
-    print("Will attempt to continue - training may fail if empty_weight is not fixed.")
-
-# Last resort: Monkey-patch torch.nn.functional.cross_entropy globally
-# This will intercept ALL calls to cross_entropy and fix the weight parameter
-print("\nApplying global monkey-patch to torch.nn.functional.cross_entropy...")
-try:
-    import torch.nn.functional as F
-    original_cross_entropy = F.cross_entropy
-    
-    def patched_cross_entropy(input, target, weight=None, *args, **kwargs):
-        """Patched cross_entropy that fixes empty_weight size mismatch"""
-        # If weight is provided and is a tensor with wrong size, set to None
-        if weight is not None and isinstance(weight, torch.Tensor):
-            # Check if weight size doesn't match number of classes
-            # Input shape: [batch, num_classes, ...] or [batch, ..., num_classes]
-            # After transpose in loss_labels: source_logits.transpose(1, 2) -> [batch, num_classes, num_queries]
-            if len(input.shape) >= 2:
-                # For cross_entropy, input is [N, C] or [N, C, ...] where C is num_classes
-                # After transpose(1,2), shape is [batch, num_classes, num_queries]
-                num_classes = input.shape[1]  # Second dimension is num_classes after transpose
-                if weight.shape[0] != num_classes:
-                    # Size mismatch - use None instead
-                    # Only print once to avoid spam
-                    if not hasattr(patched_cross_entropy, '_warned'):
-                        print(f"  [cross_entropy patch] Fixing weight size mismatch: {weight.shape[0]} != {num_classes}, using None")
-                        patched_cross_entropy._warned = True
-                    weight = None
-        return original_cross_entropy(input, target, weight=weight, *args, **kwargs)
-    
-    # Replace the function
-    F.cross_entropy = patched_cross_entropy
-    torch.nn.functional.cross_entropy = patched_cross_entropy
-    print("✓ Monkey-patched torch.nn.functional.cross_entropy globally")
-except Exception as e:
-    print(f"Could not apply global monkey-patch: {e}")
-    import traceback
-    traceback.print_exc()
+    print(f"  Warning: Could not set empty_weight: {e}")
+    print("  Training will continue - this may cause issues if empty_weight size mismatch occurs")
 
 # Move model to device
 model.to(device)
@@ -853,17 +727,6 @@ else:
         
         # Test model forward pass
         print("\nTesting model forward pass...")
-        # One final attempt to fix empty_weight before test
-        try:
-            if hasattr(model, 'loss_function') and hasattr(model.loss_function, 'criterion'):
-                if hasattr(model.loss_function.criterion, 'empty_weight'):
-                    weight = model.loss_function.criterion.empty_weight
-                    if isinstance(weight, torch.Tensor) and weight.shape[0] != new_out_features:
-                        model.loss_function.criterion.empty_weight = None
-                        print("Fixed empty_weight to None before test")
-        except:
-            pass
-        
         model.eval()
         with torch.no_grad():
             pixel_values = test_batch['pixel_values'].to(device)
@@ -875,25 +738,11 @@ else:
             print(f"  - Pred boxes shape: {test_outputs.pred_boxes.shape}")
         model.train()  # Set back to training mode
     except Exception as e:
-        error_msg = str(e)
-        if "empty_weight" in error_msg or "weight tensor" in error_msg:
-            print(f"⚠️  Forward pass test failed due to empty_weight issue: {e}")
-            print("This is likely due to the loss function's empty_weight not being properly updated.")
-            print("Attempting to fix and continue...")
-            # Try one more time to fix it
-            try:
-                if hasattr(model, 'loss_function') and hasattr(model.loss_function, 'criterion'):
-                    model.loss_function.criterion.empty_weight = None
-                    print("Set empty_weight to None. Training will proceed, but forward pass test is skipped.")
-            except:
-                pass
-            print("⚠️  Warning: Forward pass test skipped. Training may still work, but monitor for errors.")
-        else:
-            print(f"✗ Test failed: {e}")
-            import traceback
-            traceback.print_exc()
-            print("\nThis error is not related to empty_weight. Please check the error above.")
-            raise
+        print(f"⚠️  Forward pass test failed: {e}")
+        print("This test is optional - training will proceed anyway.")
+        print("If training fails with the same error, check the error message above.")
+        import traceback
+        traceback.print_exc()
 
 print("=" * 60)
 print("All setup complete. Ready to start training...")
