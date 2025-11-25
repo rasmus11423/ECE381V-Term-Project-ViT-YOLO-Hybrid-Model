@@ -1,0 +1,156 @@
+Running "module reset". Resetting modules to system default. The following $MODULEPATH directories have been removed: None
+
+Lmod is automatically replacing "nvidia/24.7" with "gcc/13.2.0".
+
+
+Due to MODULEPATH changes, the following have been reloaded:
+  1) openmpi/5.0.5
+
+The following have been reloaded with a version change:
+  1) nvpl/24.7 => nvpl/25.9
+
+
+Due to MODULEPATH changes, the following have been reloaded:
+  1) openmpi/5.0.5
+
+Using a slow image processor as `use_fast` is unset and a slow processor was saved with this model. `use_fast=True` will be the default behavior in v4.52, even if the model was saved with a slow processor. This will result in minor differences in outputs. You'll still be able to use a slow processor with `use_fast=False`.
+[neptune] [warning] /home1/11112/rasmus1142/ECE381V-Term-Project-ViT-YOLO-Hybrid-Model/ViT_YOLOS_train.py:913: NeptuneWarning: Info (NVML): NVML Shared Library Not Found. GPU usage metrics may not be reported. For more information, see https://docs-legacy.neptune.ai/help/nvml_error/
+Traceback (most recent call last):
+  File "/home1/11112/rasmus1142/ECE381V-Term-Project-ViT-YOLO-Hybrid-Model/ViT_YOLOS_train.py", line 1020, in run_epoch
+    outputs = model(pixel_values=pixel_values, labels=labels)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home1/11112/rasmus1142/ECE381V-Term-Project-ViT-YOLO-Hybrid-Model/venv/lib/python3.11/site-packages/torch/nn/modules/module.py", line 1736, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home1/11112/rasmus1142/ECE381V-Term-Project-ViT-YOLO-Hybrid-Model/venv/lib/python3.11/site-packages/torch/nn/modules/module.py", line 1747, in _call_impl
+    return forward_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home1/11112/rasmus1142/ECE381V-Term-Project-ViT-YOLO-Hybrid-Model/venv/lib/python3.11/site-packages/transformers/utils/generic.py", line 918, in wrapper
+    output = func(self, *args, **kwargs)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home1/11112/rasmus1142/ECE381V-Term-Project-ViT-YOLO-Hybrid-Model/venv/lib/python3.11/site-packages/transformers/models/yolos/modeling_yolos.py", line 671, in forward
+    outputs: BaseModelOutputWithPooling = self.vit(pixel_values, **kwargs)
+                                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home1/11112/rasmus1142/ECE381V-Term-Project-ViT-YOLO-Hybrid-Model/venv/lib/python3.11/site-packages/torch/nn/modules/module.py", line 1736, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home1/11112/rasmus1142/ECE381V-Term-Project-ViT-YOLO-Hybrid-Model/venv/lib/python3.11/site-packages/torch/nn/modules/module.py", line 1747, in _call_impl
+    return forward_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home1/11112/rasmus1142/ECE381V-Term-Project-ViT-YOLO-Hybrid-Model/venv/lib/python3.11/site-packages/transformers/utils/generic.py", line 1064, in wrapper
+    outputs = func(self, *args, **kwargs)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home1/11112/rasmus1142/ECE381V-Term-Project-ViT-YOLO-Hybrid-Model/venv/lib/python3.11/site-packages/transformers/models/yolos/modeling_yolos.py", line 539, in forward
+    encoder_outputs: BaseModelOutput = self.encoder(
+                                       ^^^^^^^^^^^^^
+  File "/home1/11112/rasmus1142/ECE381V-Term-Project-ViT-YOLO-Hybrid-Model/venv/lib/python3.11/site-packages/torch/nn/modules/module.py", line 1736, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home1/11112/rasmus1142/ECE381V-Term-Project-ViT-YOLO-Hybrid-Model/venv/lib/python3.11/site-packages/torch/nn/modules/module.py", line 1747, in _call_impl
+    return forward_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home1/11112/rasmus1142/ECE381V-Term-Project-ViT-YOLO-Hybrid-Model/venv/lib/python3.11/site-packages/transformers/models/yolos/modeling_yolos.py", line 446, in forward
+    hidden_states = layer_module(hidden_states, layer_head_mask)
+                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home1/11112/rasmus1142/ECE381V-Term-Project-ViT-YOLO-Hybrid-Model/venv/lib/python3.11/site-packages/transformers/modeling_layers.py", line 94, in __call__
+    return super().__call__(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home1/11112/rasmus1142/ECE381V-Term-Project-ViT-YOLO-Hybrid-Model/venv/lib/python3.11/site-packages/torch/nn/modules/module.py", line 1736, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home1/11112/rasmus1142/ECE381V-Term-Project-ViT-YOLO-Hybrid-Model/venv/lib/python3.11/site-packages/torch/nn/modules/module.py", line 1747, in _call_impl
+    return forward_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home1/11112/rasmus1142/ECE381V-Term-Project-ViT-YOLO-Hybrid-Model/venv/lib/python3.11/site-packages/transformers/models/yolos/modeling_yolos.py", line 404, in forward
+    layer_output = self.output(layer_output, hidden_states)
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home1/11112/rasmus1142/ECE381V-Term-Project-ViT-YOLO-Hybrid-Model/venv/lib/python3.11/site-packages/torch/nn/modules/module.py", line 1736, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home1/11112/rasmus1142/ECE381V-Term-Project-ViT-YOLO-Hybrid-Model/venv/lib/python3.11/site-packages/torch/nn/modules/module.py", line 1747, in _call_impl
+    return forward_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home1/11112/rasmus1142/ECE381V-Term-Project-ViT-YOLO-Hybrid-Model/venv/lib/python3.11/site-packages/transformers/models/yolos/modeling_yolos.py", line 372, in forward
+    hidden_states = self.dense(hidden_states)
+                    ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home1/11112/rasmus1142/ECE381V-Term-Project-ViT-YOLO-Hybrid-Model/venv/lib/python3.11/site-packages/torch/nn/modules/module.py", line 1736, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home1/11112/rasmus1142/ECE381V-Term-Project-ViT-YOLO-Hybrid-Model/venv/lib/python3.11/site-packages/torch/nn/modules/module.py", line 1747, in _call_impl
+    return forward_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home1/11112/rasmus1142/ECE381V-Term-Project-ViT-YOLO-Hybrid-Model/venv/lib/python3.11/site-packages/torch/nn/modules/linear.py", line 125, in forward
+    return F.linear(input, self.weight, self.bias)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+RuntimeError: [enforce fail at alloc_cpu.cpp:117] err == 0. DefaultCPUAllocator: can't allocate memory: you tried to allocate 10736640000 bytes. Error code 12 (Cannot allocate memory)
+Traceback (most recent call last):
+  File "/home1/11112/rasmus1142/ECE381V-Term-Project-ViT-YOLO-Hybrid-Model/ViT_YOLOS_train.py", line 1118, in <module>
+    train_loss, train_accuracy, train_time = run_epoch(train_loader, training=True, epoch_num=epoch, neptune_run=neptune_run)
+                                             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home1/11112/rasmus1142/ECE381V-Term-Project-ViT-YOLO-Hybrid-Model/ViT_YOLOS_train.py", line 1020, in run_epoch
+    outputs = model(pixel_values=pixel_values, labels=labels)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home1/11112/rasmus1142/ECE381V-Term-Project-ViT-YOLO-Hybrid-Model/venv/lib/python3.11/site-packages/torch/nn/modules/module.py", line 1736, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home1/11112/rasmus1142/ECE381V-Term-Project-ViT-YOLO-Hybrid-Model/venv/lib/python3.11/site-packages/torch/nn/modules/module.py", line 1747, in _call_impl
+    return forward_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home1/11112/rasmus1142/ECE381V-Term-Project-ViT-YOLO-Hybrid-Model/venv/lib/python3.11/site-packages/transformers/utils/generic.py", line 918, in wrapper
+    output = func(self, *args, **kwargs)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home1/11112/rasmus1142/ECE381V-Term-Project-ViT-YOLO-Hybrid-Model/venv/lib/python3.11/site-packages/transformers/models/yolos/modeling_yolos.py", line 671, in forward
+    outputs: BaseModelOutputWithPooling = self.vit(pixel_values, **kwargs)
+                                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home1/11112/rasmus1142/ECE381V-Term-Project-ViT-YOLO-Hybrid-Model/venv/lib/python3.11/site-packages/torch/nn/modules/module.py", line 1736, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home1/11112/rasmus1142/ECE381V-Term-Project-ViT-YOLO-Hybrid-Model/venv/lib/python3.11/site-packages/torch/nn/modules/module.py", line 1747, in _call_impl
+    return forward_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home1/11112/rasmus1142/ECE381V-Term-Project-ViT-YOLO-Hybrid-Model/venv/lib/python3.11/site-packages/transformers/utils/generic.py", line 1064, in wrapper
+    outputs = func(self, *args, **kwargs)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home1/11112/rasmus1142/ECE381V-Term-Project-ViT-YOLO-Hybrid-Model/venv/lib/python3.11/site-packages/transformers/models/yolos/modeling_yolos.py", line 539, in forward
+    encoder_outputs: BaseModelOutput = self.encoder(
+                                       ^^^^^^^^^^^^^
+  File "/home1/11112/rasmus1142/ECE381V-Term-Project-ViT-YOLO-Hybrid-Model/venv/lib/python3.11/site-packages/torch/nn/modules/module.py", line 1736, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home1/11112/rasmus1142/ECE381V-Term-Project-ViT-YOLO-Hybrid-Model/venv/lib/python3.11/site-packages/torch/nn/modules/module.py", line 1747, in _call_impl
+    return forward_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home1/11112/rasmus1142/ECE381V-Term-Project-ViT-YOLO-Hybrid-Model/venv/lib/python3.11/site-packages/transformers/models/yolos/modeling_yolos.py", line 446, in forward
+    hidden_states = layer_module(hidden_states, layer_head_mask)
+                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home1/11112/rasmus1142/ECE381V-Term-Project-ViT-YOLO-Hybrid-Model/venv/lib/python3.11/site-packages/transformers/modeling_layers.py", line 94, in __call__
+    return super().__call__(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home1/11112/rasmus1142/ECE381V-Term-Project-ViT-YOLO-Hybrid-Model/venv/lib/python3.11/site-packages/torch/nn/modules/module.py", line 1736, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home1/11112/rasmus1142/ECE381V-Term-Project-ViT-YOLO-Hybrid-Model/venv/lib/python3.11/site-packages/torch/nn/modules/module.py", line 1747, in _call_impl
+    return forward_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home1/11112/rasmus1142/ECE381V-Term-Project-ViT-YOLO-Hybrid-Model/venv/lib/python3.11/site-packages/transformers/models/yolos/modeling_yolos.py", line 404, in forward
+    layer_output = self.output(layer_output, hidden_states)
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home1/11112/rasmus1142/ECE381V-Term-Project-ViT-YOLO-Hybrid-Model/venv/lib/python3.11/site-packages/torch/nn/modules/module.py", line 1736, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home1/11112/rasmus1142/ECE381V-Term-Project-ViT-YOLO-Hybrid-Model/venv/lib/python3.11/site-packages/torch/nn/modules/module.py", line 1747, in _call_impl
+    return forward_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home1/11112/rasmus1142/ECE381V-Term-Project-ViT-YOLO-Hybrid-Model/venv/lib/python3.11/site-packages/transformers/models/yolos/modeling_yolos.py", line 372, in forward
+    hidden_states = self.dense(hidden_states)
+                    ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home1/11112/rasmus1142/ECE381V-Term-Project-ViT-YOLO-Hybrid-Model/venv/lib/python3.11/site-packages/torch/nn/modules/module.py", line 1736, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home1/11112/rasmus1142/ECE381V-Term-Project-ViT-YOLO-Hybrid-Model/venv/lib/python3.11/site-packages/torch/nn/modules/module.py", line 1747, in _call_impl
+    return forward_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home1/11112/rasmus1142/ECE381V-Term-Project-ViT-YOLO-Hybrid-Model/venv/lib/python3.11/site-packages/torch/nn/modules/linear.py", line 125, in forward
+    return F.linear(input, self.weight, self.bias)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+RuntimeError: [enforce fail at alloc_cpu.cpp:117] err == 0. DefaultCPUAllocator: can't allocate memory: you tried to allocate 10736640000 bytes. Error code 12 (Cannot allocate memory)
