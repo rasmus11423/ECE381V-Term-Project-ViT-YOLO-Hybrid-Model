@@ -5,7 +5,7 @@
 #SBATCH -p gg                                              # Grace Hopper GPU partition
 #SBATCH -N 6
 #SBATCH -n 6
-#SBATCH -t 00:00:00                                        # Max 48 hours on TACC Vista
+#SBATCH -t 00:10:00                                        # Max 48 hours on TACC Vista
 #SBATCH --mail-type=ALL
 #SBATCH --mail-user='rl37272@my.utexas.edu'
 
