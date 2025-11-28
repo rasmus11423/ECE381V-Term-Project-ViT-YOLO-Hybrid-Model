@@ -2,7 +2,7 @@
 #SBATCH -J vit_yolos_exdark_train
 #SBATCH -o Output/out_%j.txt
 #SBATCH -e Error/error_%j.txt
-#SBATCH -p gg                                              # Grace Hopper GPU partition
+#SBATCH -p gh                                              # Grace-Hopper GPU partition (H200 GPUs)
 #SBATCH -N 6
 #SBATCH -n 6
 #SBATCH -t 00:10:00                                        # Max 48 hours on TACC Vista
