@@ -5,9 +5,7 @@
 #SBATCH -p gg                                              # Grace Hopper GPU partition
 #SBATCH -N 6
 #SBATCH -n 6
-#SBATCH --gres=gpu:1                                       # Request 1 GPU per node (forces GPU node allocation)
-#SBATCH --constraint=gpu                                   # Constraint to ensure GPU nodes (if available)
-#SBATCH -t 00:10:00                                        # Max 48 hours on TACC Vista
+#SBATCH -t 00:00:00                                        # Max 48 hours on TACC Vista
 #SBATCH --mail-type=ALL
 #SBATCH --mail-user='rl37272@my.utexas.edu'
 
@@ -32,6 +30,9 @@ echo "Node(s): $SLURM_NODELIST"
 echo "Start Time: $(date)"
 echo "Working Directory: $(pwd)"
 echo "Python version: $(python --version)"
+echo "=========================================="
+echo "Checking node features..."
+scontrol show node $SLURM_NODELIST | grep -E "NodeName|Features|Gres" | head -20 || echo "Could not query node features"
 echo "=========================================="
 
 # ==============================
