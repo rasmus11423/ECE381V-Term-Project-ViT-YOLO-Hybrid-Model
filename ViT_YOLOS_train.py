@@ -356,10 +356,12 @@ from transformers import (
 
 import neptune
 
-# Determine device - check CUDA availability
-# Note: This will be re-checked after model loading to ensure CUDA is properly detected
-device = "cuda" if torch.cuda.is_available() else "cpu"
+# Determine device
+device = 'cuda' if torch.cuda.is_available() else 'cpu'
 num_gpus = torch.cuda.device_count() if torch.cuda.is_available() else 0
+print(f"Using device: {device}")
+if device == 'cuda':
+    print(f"Found {num_gpus} GPU(s)")
 
 # Get class mappings for YOLOS
 num_classes = len(Classes)
@@ -501,14 +503,12 @@ val_dataset = ExDarkYoloDetectionDataset(
 )
 
 # ----------------------------------------------------------------------
-# 6.5. Set batch size - reduced from 1000 to prevent OOM errors
+# 6.5. Set batch size
 # ----------------------------------------------------------------------
-# Batch size reduced to 16 to prevent memory allocation errors
-# With 6 GPUs, effective batch size will be 16 * 6 = 96
-BATCH_SIZE = 16
+BATCH_SIZE = 64
 print(f"Batch size set to {BATCH_SIZE}.")
-print(f"   This is a reasonable batch size for object detection models.")
-print(f"   If using multiple GPUs, effective batch size will be {BATCH_SIZE} * num_gpus.")
+if device == "cuda" and num_gpus > 1:
+    print(f"   With {num_gpus} GPUs, effective batch size will be {BATCH_SIZE * num_gpus}.")
 
 # Set num_workers for data loading
 # Use 0 workers on SLURM to avoid multiprocessing hangs (single-threaded is safer)
@@ -551,84 +551,9 @@ print("✓ Val DataLoader created")
 # ----------------------------------------------------------------------
 # 7. Model loading and setup
 # ----------------------------------------------------------------------
-# Check if CUDA is available with diagnostics (matching YOLOv5 script)
-print("\n" + "=" * 60)
-print("PyTorch CUDA Diagnostics:")
-print("=" * 60)
-print(f"PyTorch version: {torch.__version__}")
-print(f"torch.cuda.is_available(): {torch.cuda.is_available()}")
-if torch.cuda.is_available():
-    print(f"CUDA version (PyTorch): {torch.version.cuda}")
-    print(f"Number of GPUs: {torch.cuda.device_count()}")
-    for i in range(torch.cuda.device_count()):
-        print(f"  GPU {i}: {torch.cuda.get_device_name(i)}")
-        props = torch.cuda.get_device_properties(i)
-        print(f"    Memory: {props.total_memory / 1e9:.2f} GB")
-else:
-    # Check if PyTorch was built with CUDA support (even if not available on this node)
-    if torch.version.cuda is not None:
-        print("⚠️  CUDA not available on this node (this is normal on login nodes)")
-        print(f"   PyTorch was built with CUDA {torch.version.cuda} support")
-        print("   CUDA will be available when job runs on GPU compute nodes")
-    else:
-        print("⚠️  WARNING: CUDA not available and PyTorch was built without CUDA support!")
-        print("   This means PyTorch CPU version was installed.")
-        print("   Training will NOT use GPUs even on GPU nodes!")
-        print("   Please reinstall PyTorch with CUDA support using fix_venv_tacc.sh")
-print("=" * 60)
 
-# Re-check device after diagnostics to ensure CUDA is properly detected
-# This is important because CUDA might not be available immediately after import
-device = "cuda" if torch.cuda.is_available() else "cpu"
-num_gpus = torch.cuda.device_count() if torch.cuda.is_available() else 0
-
-print(f"\nUsing device: {device}")
-if device == 'cpu':
-    if torch.version.cuda is not None:
-        print("⚠️  WARNING: Training will use CPU (CUDA not available on this node)")
-        print("   If running on GPU nodes, check that --gres=gpu is set in SLURM script")
-        print("   This is normal on login nodes. Training will use GPUs on compute nodes.")
-    else:
-        print("⚠️  WARNING: Training will be VERY SLOW on CPU!")
-        print("   PyTorch was installed without CUDA support.")
-        print("   Please run: bash fix_venv_tacc.sh")
-else:
-    print(f"✓ CUDA available - will use {num_gpus} GPU(s) for training")
-
-print(f"\nLoading YOLOS model '{MODEL_NAME}' with {num_classes} classes...")
-print("This may take a few minutes if downloading from Hugging Face Hub...")
-sys.stdout.flush()
-
-# Load model with original config first to get pretrained weights
-# Add timeout and better error handling for Hugging Face downloads
-try:
-    import os
-    # Set Hugging Face cache directory to avoid permission issues
-    hf_cache_dir = os.environ.get('HF_HOME', os.path.expanduser('~/.cache/huggingface'))
-    print(f"Hugging Face cache directory: {hf_cache_dir}")
-    sys.stdout.flush()
-    
-    # Load model with explicit timeout and error handling
-    print("Downloading/loading model from Hugging Face Hub...")
-    sys.stdout.flush()
-    
-    model = YolosForObjectDetection.from_pretrained(
-        MODEL_NAME,
-        cache_dir=hf_cache_dir,
-        local_files_only=False,  # Allow downloading if not cached
-    )
-    print("✓ Model loaded successfully")
-    sys.stdout.flush()
-except Exception as e:
-    print(f"✗ Error loading model: {e}")
-    print("\nTroubleshooting:")
-    print("  1. Check internet connectivity (Hugging Face Hub access)")
-    print("  2. Check disk space in cache directory")
-    print("  3. Try setting HF_HOME environment variable")
-    print("  4. Check if model name is correct:", MODEL_NAME)
-    import traceback
-    traceback.print_exc()
-    raise
+print(f"Loading YOLOS model '{MODEL_NAME}' with {num_classes} classes...")
+model = YolosForObjectDetection.from_pretrained(MODEL_NAME)
 
 # Now update the config and resize the classification head
 config = model.config
@@ -673,25 +598,19 @@ if old_num_labels != new_num_labels:
 # Update model config
 model.config = config
 
-# Fix loss function empty_weight - set to None to avoid size mismatch issues
-# This is simpler and more reliable than trying to resize the weight tensor
-print("Setting loss function empty_weight to None to avoid size mismatch...")
-try:
-    if hasattr(model, 'loss_function'):
-        loss_func = model.loss_function
-        if hasattr(loss_func, 'criterion') and hasattr(loss_func.criterion, 'empty_weight'):
-            loss_func.criterion.empty_weight = None
-            print("✓ Set empty_weight to None")
-        elif hasattr(loss_func, 'empty_weight'):
-            loss_func.empty_weight = None
-            print("✓ Set empty_weight to None")
-        else:
-            print("  (empty_weight not found - may not be needed)")
-    else:
-        print("  (loss_function not found - may not be needed)")
-except Exception as e:
-    print(f"  Warning: Could not set empty_weight: {e}")
-    print("  Training will continue - this may cause issues if empty_weight size mismatch occurs")
+# Fix empty_weight issue: patch cross_entropy to handle size mismatch
+# The loss function has empty_weight with wrong size (COCO's 92 vs our 13 classes)
+import torch.nn.functional as F
+original_cross_entropy = F.cross_entropy
+
+def patched_cross_entropy(input, target, weight=None, *args, **kwargs):
+    if weight is not None and isinstance(weight, torch.Tensor):
+        if len(input.shape) >= 2 and weight.shape[0] != input.shape[1]:
+            weight = None  # Ignore weight if size mismatch
+    return original_cross_entropy(input, target, weight=weight, *args, **kwargs)
+
+F.cross_entropy = patched_cross_entropy
+torch.nn.functional.cross_entropy = patched_cross_entropy
 
 # Move model to device
 model.to(device)
@@ -709,44 +628,6 @@ NUM_EPOCHS = 10
 optimizer = torch.optim.AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY)
 lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=NUM_EPOCHS)
 
-# Test dataset loading and model forward pass before training
-# Skip this test if running in SLURM to avoid hanging (test will happen in training loop anyway)
-SKIP_FORWARD_TEST = os.environ.get('SLURM_JOB_ID') is not None
-if SKIP_FORWARD_TEST:
-    print("\nSkipping forward pass test (running in SLURM - will test during training)...")
-else:
-    print("\nTesting dataset loading and model...")
-    try:
-        test_sample = train_dataset[0]
-        test_batch = collate_fn([test_sample])
-        print(f"✓ Dataset test successful:")
-        print(f"  - Image shape: {test_batch['pixel_values'].shape}")
-        print(f"  - Number of labels in batch: {len(test_batch['labels'])}")
-        if len(test_batch['labels']) > 0:
-            print(f"  - Label keys: {list(test_batch['labels'][0].keys())}")
-        
-        # Test model forward pass
-        print("\nTesting model forward pass...")
-        model.eval()
-        with torch.no_grad():
-            pixel_values = test_batch['pixel_values'].to(device)
-            labels = [{k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in t.items()} for t in test_batch['labels']]
-            test_outputs = model(pixel_values=pixel_values, labels=labels)
-            print(f"✓ Model forward pass successful:")
-            print(f"  - Loss: {test_outputs.loss.item():.4f}")
-            print(f"  - Logits shape: {test_outputs.logits.shape}")
-            print(f"  - Pred boxes shape: {test_outputs.pred_boxes.shape}")
-        model.train()  # Set back to training mode
-    except Exception as e:
-        print(f"⚠️  Forward pass test failed: {e}")
-        print("This test is optional - training will proceed anyway.")
-        print("If training fails with the same error, check the error message above.")
-        import traceback
-        traceback.print_exc()
-
-print("=" * 60)
-print("All setup complete. Ready to start training...")
-print("=" * 60)
 
 # ----------------------------------------------------------------------
 # 8. Neptune logging (optional)
@@ -784,13 +665,10 @@ if token_file.exists():
             neptune_run["parameters/num_gpus"] = num_gpus
             neptune_run["parameters/effective_batch_size"] = BATCH_SIZE * num_gpus
         neptune_run["parameters/classes"] = ", ".join(Classes)
-        print("Neptune logging enabled with async mode for real-time updates.")
+        print("Neptune monitoring initialized successfully")
     except Exception as e:
-        print(f"Warning: could not initialize Neptune: {e}")
-        import traceback
-        traceback.print_exc()
-else:
-    print("Neptune token file not found; running without Neptune logging.")
+        print(f"Warning: Could not initialize Neptune monitoring: {e}")
+        print("Continuing without Neptune monitoring...")
 
 # ----------------------------------------------------------------------
 # 9. Training + validation loop
@@ -867,7 +745,12 @@ def run_epoch(dataloader, training=True, epoch_num=0, neptune_run=None):
 
             with torch.set_grad_enabled(training):
                 outputs = model(pixel_values=pixel_values, labels=labels)
-                loss = outputs.loss  # scalar
+                loss = outputs.loss
+                
+                # Check for NaN before backward
+                if torch.isnan(loss) or torch.isinf(loss):
+                    print(f"NaN/Inf detected at batch {batch_idx}, stopping training")
+                    return None, None, 0
                 
                 # Compute accuracy
                 accuracy = compute_accuracy(outputs, labels)
@@ -892,35 +775,10 @@ def run_epoch(dataloader, training=True, epoch_num=0, neptune_run=None):
             eta_seconds = avg_time_per_batch * remaining_batches
             eta_hours = eta_seconds / 3600
             
-            # Print for every batch
-            mode = "Training" if training else "Validation"
-            print(f"  {mode}: Batch {batch_idx+1}/{total_batches} | "
-                  f"Loss: {avg_loss:.4f} | "
-                  f"Accuracy: {avg_accuracy:.4f} | "
-                  f"Elapsed: {elapsed/3600:.2f}h | "
-                  f"ETA: {eta_hours:.2f}h", flush=True)
             
-            # Log to Neptune every batch for real-time visibility
-            if neptune_run is not None:
-                try:
-                    metric_prefix = "train" if training else "val"
-                    # Calculate global batch index across all epochs
-                    global_batch_idx = (epoch_num - 1) * total_batches + batch_idx + 1
-                    # Use append() for series logging - Neptune will track these in real-time
-                    neptune_run[f"{metric_prefix}/batch_loss"].append(avg_loss)
-                    neptune_run[f"{metric_prefix}/batch_accuracy"].append(avg_accuracy)
-                    neptune_run[f"{metric_prefix}/batch_number"].append(global_batch_idx)
-                    # Sync every 10 batches to reduce overhead while maintaining visibility
-                    if (batch_idx + 1) % 10 == 0:
-                        neptune_run.sync()
-                except Exception as e:
-                    # Don't stop training if Neptune logging fails
-                    pass
             
         except Exception as e:
             print(f"Error processing batch {batch_idx}: {e}")
-            import traceback
-            traceback.print_exc()
             raise
 
     epoch_loss = running_loss / max(1, n_batches)
@@ -962,35 +820,31 @@ if __name__ == '__main__':
         print(f"\nEpoch {epoch}/{NUM_EPOCHS}")
         sys.stdout.flush()
 
-        print(f"Starting training epoch {epoch}...")
-        sys.stdout.flush()
         train_loss, train_accuracy, train_time = run_epoch(train_loader, training=True, epoch_num=epoch, neptune_run=neptune_run)
-        train_hours = train_time / 3600
-        print(f"Training epoch {epoch} complete. Loss: {train_loss:.4f}, Accuracy: {train_accuracy:.4f}, Time: {train_hours:.2f}h")
-        sys.stdout.flush()
         
-        print(f"Starting validation epoch {epoch}...")
-        sys.stdout.flush()
+        # Check if training returned None (NaN detected)
+        if train_loss is None or train_accuracy is None:
+            print(f"Training stopped due to NaN/Inf at epoch {epoch}")
+            break
+        
         val_loss, val_accuracy, val_time = run_epoch(val_loader, training=False, epoch_num=epoch, neptune_run=neptune_run)
-        val_hours = val_time / 3600
-        print(f"Validation epoch {epoch} complete. Loss: {val_loss:.4f}, Accuracy: {val_accuracy:.4f}, Time: {val_hours:.2f}h")
-        sys.stdout.flush()
 
         lr_scheduler.step()
+        current_lr = optimizer.param_groups[0]["lr"]
+
+        if np.isnan(train_loss) or np.isnan(val_loss):
+            print(f"NaN detected at epoch {epoch}! Training stopped.")
+            break
 
         train_losses.append(train_loss)
         val_losses.append(val_loss)
         train_accuracies.append(train_accuracy)
         val_accuracies.append(val_accuracy)
-
-        current_lr = optimizer.param_groups[0]["lr"]
-        total_epoch_time = train_time + val_time
-        total_epoch_hours = total_epoch_time / 3600
-        remaining_epochs = NUM_EPOCHS - epoch
-        estimated_remaining_hours = total_epoch_hours * remaining_epochs
         
-        print(f"Epoch {epoch}/{NUM_EPOCHS} - Train Loss: {train_loss:.4f}, Train Acc: {train_accuracy:.4f}, Val Loss: {val_loss:.4f}, Val Acc: {val_accuracy:.4f}, LR: {current_lr:.2e}")
-        print(f"  Epoch time: {total_epoch_hours:.2f}h | Estimated remaining: {estimated_remaining_hours:.2f}h")
+        print(f"Epoch {epoch}/{NUM_EPOCHS} | "
+              f"Train Loss: {train_loss:.4f} | Train Acc: {train_accuracy:.4f} | "
+              f"Val Loss: {val_loss:.4f} | Val Acc: {val_accuracy:.4f} | "
+              f"LR: {current_lr:.6f}")
 
         if neptune_run is not None:
             try:
