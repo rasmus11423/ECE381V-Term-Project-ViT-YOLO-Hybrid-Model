@@ -623,7 +623,7 @@ if device == "cuda" and num_gpus > 1:
 
 LEARNING_RATE = 5e-5
 WEIGHT_DECAY = 1e-4
-NUM_EPOCHS = 10
+NUM_EPOCHS = 3
 
 optimizer = torch.optim.AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY)
 lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=NUM_EPOCHS)
@@ -767,6 +767,11 @@ def run_epoch(dataloader, training=True, epoch_num=0, neptune_run=None):
             # Compute averages
             avg_loss = running_loss / n_batches
             avg_accuracy = running_accuracy / n_batches
+            
+            # Print progress every 10 batches or at the end
+            if (batch_idx + 1) % 10 == 0 or (batch_idx + 1) == total_batches:
+                elapsed = time.time() - start_time
+                print(f"  Batch {batch_idx+1}/{total_batches} | Loss: {avg_loss:.4f} | Acc: {avg_accuracy:.4f} | Time: {elapsed:.1f}s", flush=True)
             
             # Calculate ETA
             elapsed = time.time() - start_time
