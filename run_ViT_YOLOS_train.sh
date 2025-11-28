@@ -35,8 +35,13 @@ echo "=========================================="
 # ==============================
 # Verify GPU and CUDA availability
 # ==============================
+echo "Checking CUDA environment..."
+echo "CUDA_VISIBLE_DEVICES: $CUDA_VISIBLE_DEVICES"
+echo "Checking for GPUs with nvidia-smi..."
+which nvidia-smi && nvidia-smi --query-gpu=index,name,memory.total --format=csv,noheader || echo "nvidia-smi not available"
+
 echo "Verifying required packages..."
-python -c "import torch; import transformers; print(f'PyTorch: {torch.__version__}'); print(f'Transformers: {transformers.__version__}'); print(f'CUDA available: {torch.cuda.is_available()}')" || {
+python -c "import torch; import transformers; print(f'PyTorch: {torch.__version__}'); print(f'Transformers: {transformers.__version__}'); print(f'CUDA available: {torch.cuda.is_available()}'); print(f'CUDA version: {torch.version.cuda if torch.version.cuda else \"None\"}'); print(f'Number of GPUs: {torch.cuda.device_count() if torch.cuda.is_available() else 0}')" || {
     echo "Warning: Some packages may be missing. The script will attempt to install them automatically."
 }
 
