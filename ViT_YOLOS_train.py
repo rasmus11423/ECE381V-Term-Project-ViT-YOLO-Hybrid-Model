@@ -347,6 +347,10 @@ import numpy as np
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+import os
+
+# Optimize PyTorch memory allocation to reduce fragmentation
+os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
 
 from transformers import (
     AutoConfig,
@@ -362,6 +366,8 @@ num_gpus = torch.cuda.device_count() if torch.cuda.is_available() else 0
 print(f"Using device: {device}")
 if device == 'cuda':
     print(f"Found {num_gpus} GPU(s)")
+    # Clear GPU cache
+    torch.cuda.empty_cache()
 
 # Get class mappings for YOLOS
 num_classes = len(Classes)
@@ -505,7 +511,9 @@ val_dataset = ExDarkYoloDetectionDataset(
 # ----------------------------------------------------------------------
 # 6.5. Set batch size
 # ----------------------------------------------------------------------
-BATCH_SIZE = 64
+# Reduced batch size for YOLOS (ViT-based object detection is memory-intensive)
+# Batch size 8 should fit in GPU memory (95GB GPU)
+BATCH_SIZE = 8
 print(f"Batch size set to {BATCH_SIZE}.")
 if device == "cuda" and num_gpus > 1:
     print(f"   With {num_gpus} GPUs, effective batch size will be {BATCH_SIZE * num_gpus}.")
