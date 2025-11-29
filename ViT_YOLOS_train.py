@@ -631,7 +631,7 @@ if device == "cuda" and num_gpus > 1:
 
 LEARNING_RATE = 5e-5
 WEIGHT_DECAY = 1e-4
-NUM_EPOCHS = 3
+NUM_EPOCHS = 30
 
 optimizer = torch.optim.AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY)
 lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=NUM_EPOCHS)
