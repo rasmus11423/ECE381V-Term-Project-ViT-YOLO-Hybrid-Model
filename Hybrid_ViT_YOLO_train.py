@@ -443,28 +443,37 @@ class HybridViTYOLO(nn.Module):
         
         # YOLOv5-style detection heads (3 scales: P3, P4, P5)
         # Each head predicts: [x, y, w, h, obj, cls1, cls2, ...]
+        # All features now have 256 channels after FPN/PAN
         num_anchors = 3  # 3 anchors per scale
         self.detection_heads = nn.ModuleList([
             # P3 (large objects) - 80x80
             nn.Conv2d(256, num_anchors * (5 + num_classes), 1),
             # P4 (medium objects) - 40x40
-            nn.Conv2d(512, num_anchors * (5 + num_classes), 1),
+            nn.Conv2d(256, num_anchors * (5 + num_classes), 1),
             # P5 (small objects) - 20x20
-            nn.Conv2d(1024, num_anchors * (5 + num_classes), 1),
+            nn.Conv2d(256, num_anchors * (5 + num_classes), 1),
         ])
         
         # Feature pyramid network (FPN) for multi-scale feature fusion
-        self.fpn = nn.ModuleList([
-            nn.Conv2d(256, 256, 1),  # P3
-            nn.Conv2d(512, 512, 1),  # P4
-            nn.Conv2d(1024, 1024, 1),  # P5
+        # Lateral connections: project bottom-up features to common dimension
+        self.fpn_lateral = nn.ModuleList([
+            nn.Conv2d(256, 256, 1),  # P3 -> 256
+            nn.Conv2d(512, 256, 1),  # P4 -> 256
+            nn.Conv2d(1024, 256, 1),  # P5 -> 256
+        ])
+        
+        # Top-down pathway: refine after fusion
+        self.fpn_topdown = nn.ModuleList([
+            nn.Conv2d(256, 256, 3, padding=1),  # P3
+            nn.Conv2d(256, 256, 3, padding=1),  # P4
+            nn.Conv2d(256, 256, 3, padding=1),  # P5
         ])
         
         # Path aggregation network (PAN) for bottom-up feature fusion
         self.pan = nn.ModuleList([
-            nn.Conv2d(256, 256, 3, padding=1),
-            nn.Conv2d(512, 512, 3, padding=1),
-            nn.Conv2d(1024, 1024, 3, padding=1),
+            nn.Conv2d(256, 256, 3, padding=1),  # P3
+            nn.Conv2d(256, 256, 3, padding=1),  # P4
+            nn.Conv2d(256, 256, 3, padding=1),  # P5
         ])
         
         # Upsampling layers for FPN
@@ -535,29 +544,40 @@ class HybridViTYOLO(nn.Module):
             
             features.append(proj_output)
         
-        # Apply FPN (top-down)
+        # Apply FPN (top-down): all features now have 256 channels after lateral connections
+        # Step 1: Apply lateral connections to normalize channels
+        lateral_features = []
+        for i in range(len(features)):
+            lateral_features.append(self.fpn_lateral[i](features[i]))
+        
+        # Step 2: Top-down pathway with upsampling
         fpn_features = []
-        for i in range(len(features) - 1, -1, -1):
-            if i == len(features) - 1:
-                fpn_feat = self.fpn[i](features[i])
+        for i in range(len(lateral_features) - 1, -1, -1):
+            if i == len(lateral_features) - 1:
+                # Start from top (P5)
+                fpn_feat = lateral_features[i]
             else:
-                # Upsample and add
+                # Upsample higher-level feature and add to current level
                 upsampled = self.upsample(fpn_features[0])
-                fpn_feat = self.fpn[i](features[i]) + upsampled
+                # Add lateral feature and upsampled feature
+                fpn_feat = lateral_features[i] + upsampled
+            # Apply top-down refinement
+            fpn_feat = self.fpn_topdown[i](fpn_feat)
             fpn_features.insert(0, fpn_feat)
         
-        # Apply PAN (bottom-up)
+        # Apply PAN (bottom-up): all features are now 256 channels
         pan_features = []
         for i in range(len(fpn_features)):
             if i == 0:
                 pan_feat = self.pan[i](fpn_features[i])
             else:
-                # Downsample and add
+                # Downsample previous feature and add
                 downsampled = F.avg_pool2d(pan_features[-1], kernel_size=2, stride=2)
                 pan_feat = self.pan[i](fpn_features[i]) + downsampled
             pan_features.append(pan_feat)
         
-        # Detection heads
+        # Detection heads - need to project to different channel sizes
+        # Update detection heads to accept 256 channels and project internally
         outputs = []
         for i, head in enumerate(self.detection_heads):
             out = head(pan_features[i])
