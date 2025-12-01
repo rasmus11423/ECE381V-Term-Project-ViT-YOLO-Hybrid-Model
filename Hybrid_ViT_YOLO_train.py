@@ -514,7 +514,7 @@ class HybridViTYOLO(nn.Module):
         
         # Project to different scales and create feature maps
         features = []
-        for i, proj in enumerate(self.feature_proj):
+        for i in range(len(self.proj_convs)):
             # Project features using 1x1 conv (more efficient than linear + reshape)
             # Apply 1x1 conv directly on spatial features
             proj_output = self.proj_convs[i](patch_features)
@@ -649,12 +649,16 @@ class YOLOLoss(nn.Module):
         self.bce_loss = nn.BCEWithLogitsLoss()
         
         # Anchor boxes (YOLOv5 default anchors for 3 scales)
-        # Format: [w, h] normalized to image size
-        self.anchors = [
+        # Format: [w, h] in absolute pixels - will be normalized when used
+        # Original anchors are for 640x640 images
+        anchors_abs = [
             [[10, 13], [16, 30], [33, 23]],  # P3
             [[30, 61], [62, 45], [59, 119]],  # P4
             [[116, 90], [156, 198], [373, 326]],  # P5
         ]
+        # Normalize anchors to [0, 1] range by dividing by image size
+        self.anchors = [[[a[0]/img_size, a[1]/img_size] for a in scale_anchors] 
+                        for scale_anchors in anchors_abs]
         
         # Grid sizes for each scale
         self.grid_sizes = [80, 40, 20]  # P3, P4, P5
@@ -723,10 +727,13 @@ class YOLOLoss(nn.Module):
                     # Set targets
                     target_obj[b, best_anchor, grid_y, grid_x] = 1.0
                     target_cls[b, best_anchor, grid_y, grid_x, int(cls_id)] = 1.0
+                    # target_xy: offset within grid cell (0-1), already correct
                     target_xy[b, best_anchor, grid_y, grid_x, 0] = cx * W - grid_x
                     target_xy[b, best_anchor, grid_y, grid_x, 1] = cy * H - grid_y
-                    target_wh[b, best_anchor, grid_y, grid_x, 0] = w * W
-                    target_wh[b, best_anchor, grid_y, grid_x, 1] = h * H
+                    # target_wh: width/height in grid units (absolute pixels)
+                    # We'll compare with pred_wh which should be in same space
+                    target_wh[b, best_anchor, grid_y, grid_x, 0] = w * self.img_size
+                    target_wh[b, best_anchor, grid_y, grid_x, 1] = h * self.img_size
             
             # Compute losses
             # Box loss (only for positive anchors)
