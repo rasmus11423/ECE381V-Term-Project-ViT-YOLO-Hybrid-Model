@@ -5,7 +5,7 @@
 #SBATCH -p gh                                              # Grace-Hopper GPU partition (H200 GPUs)
 #SBATCH -N 1                                               # Start with 1 node (faster queue time)
 #SBATCH -n 1                                               # 1 task per node
-#SBATCH -t 00:05:00                                        # Max 48 hours on TACC Vista
+#SBATCH -t 01:00:00                                        # Max 48 hours on TACC Vista
 #SBATCH --mail-type=ALL
 #SBATCH --mail-user='rl37272@my.utexas.edu'
 
