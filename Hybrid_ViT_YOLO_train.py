@@ -950,8 +950,220 @@ os.environ['TQDM_DISABLE'] = '1'
 
 train_losses = []
 val_losses = []
-# Note: Accuracy metrics removed - they were fake loss-based proxies
-# Real evaluation requires mAP50 computation with NMS and IoU matching
+
+# ----------------------------------------------------------------------
+# Accuracy computation functions (simplified mAP50)
+# ----------------------------------------------------------------------
+def compute_iou(box1, box2):
+    """Compute IoU between two boxes in xyxy format."""
+    # box format: [x1, y1, x2, y2]
+    x1 = max(box1[0], box2[0])
+    y1 = max(box1[1], box2[1])
+    x2 = min(box1[2], box2[2])
+    y2 = min(box1[3], box2[3])
+    
+    if x2 <= x1 or y2 <= y1:
+        return 0.0
+    
+    intersection = (x2 - x1) * (y2 - y1)
+    area1 = (box1[2] - box1[0]) * (box1[3] - box1[1])
+    area2 = (box2[2] - box2[0]) * (box2[3] - box2[1])
+    union = area1 + area2 - intersection
+    
+    return intersection / (union + 1e-6)
+
+def decode_predictions(predictions, anchors, num_classes, img_size=640, conf_threshold=0.25):
+    """
+    Decode YOLO predictions to bounding boxes.
+    
+    Returns:
+        List of detections per image: [[x1, y1, x2, y2, conf, cls], ...]
+    """
+    device = predictions[0].device
+    batch_size = predictions[0].shape[0]
+    all_detections = [[] for _ in range(batch_size)]
+    
+    for scale_idx, pred in enumerate(predictions):
+        B, C, H, W = pred.shape
+        num_anchors = len(anchors[scale_idx])
+        
+        # Reshape: [B, anchors*(5+num_classes), H, W] -> [B, anchors, H, W, 5+num_classes]
+        pred = pred.view(B, num_anchors, 5 + num_classes, H, W)
+        pred = pred.permute(0, 1, 3, 4, 2).contiguous()
+        
+        # Decode predictions
+        pred_xy = torch.sigmoid(pred[..., 0:2])  # [B, anchors, H, W, 2]
+        pred_wh = torch.exp(pred[..., 2:4])  # [B, anchors, H, W, 2] (log-space)
+        pred_obj = torch.sigmoid(pred[..., 4:5])  # [B, anchors, H, W, 1]
+        pred_cls = torch.softmax(pred[..., 5:], dim=-1)  # [B, anchors, H, W, num_classes]
+        
+        # Get best class and confidence
+        pred_conf = pred_obj.squeeze(-1)  # [B, anchors, H, W]
+        pred_cls_conf, pred_cls_id = pred_cls.max(dim=-1)  # [B, anchors, H, W]
+        final_conf = pred_conf * pred_cls_conf  # [B, anchors, H, W]
+        
+        # Filter by confidence threshold
+        mask = final_conf > conf_threshold
+        
+        for b in range(B):
+            for a in range(num_anchors):
+                for y in range(H):
+                    for x in range(W):
+                        if mask[b, a, y, x]:
+                            # Decode box coordinates
+                            cx = (x + pred_xy[b, a, y, x, 0]) / W
+                            cy = (y + pred_xy[b, a, y, x, 1]) / H
+                            
+                            anchor_w, anchor_h = anchors[scale_idx][a]
+                            w = pred_wh[b, a, y, x, 0] * anchor_w
+                            h = pred_wh[b, a, y, x, 1] * anchor_h
+                            
+                            # Convert to xyxy format (absolute pixels)
+                            x1 = (cx - w/2) * img_size
+                            y1 = (cy - h/2) * img_size
+                            x2 = (cx + w/2) * img_size
+                            y2 = (cy + h/2) * img_size
+                            
+                            conf = final_conf[b, a, y, x].item()
+                            cls_id = pred_cls_id[b, a, y, x].item()
+                            
+                            all_detections[b].append([x1, y1, x2, y2, conf, cls_id])
+    
+    return all_detections
+
+def apply_nms(detections, iou_threshold=0.45, max_det=300):
+    """Apply Non-Maximum Suppression to detections."""
+    if len(detections) == 0:
+        return []
+    
+    # Convert to list of lists for easier manipulation
+    if isinstance(detections, torch.Tensor):
+        detections = detections.tolist()
+    
+    if len(detections) == 0:
+        return []
+    
+    # Sort by confidence (index 4 is confidence)
+    detections = sorted(detections, key=lambda x: x[4], reverse=True)
+    detections = detections[:max_det]
+    
+    # Simple NMS - greedy selection
+    keep = []
+    while len(detections) > 0:
+        # Keep highest confidence box
+        keep.append(detections[0])
+        if len(detections) == 1:
+            break
+        
+        # Remove boxes with high IoU
+        box0 = detections[0][:4]
+        remaining = []
+        for det in detections[1:]:
+            iou = compute_iou(box0, det[:4])
+            if iou < iou_threshold:
+                remaining.append(det)
+        detections = remaining
+    
+    return keep
+
+def compute_simple_accuracy(predictions_list, targets_list, anchors, num_classes, img_size=640, iou_threshold=0.5):
+    """
+    Compute simplified accuracy metric: F1 score at IoU threshold.
+    Only computes during validation to avoid slowing training.
+    
+    Args:
+        predictions_list: List of batches, each batch is list of [P3, P4, P5] predictions
+        targets_list: Flattened list of targets, one per image
+    """
+    try:
+        total_correct = 0
+        total_predictions = 0
+        total_targets = 0
+        
+        img_idx = 0  # Track image index across batches
+        
+        # Process each batch
+        for batch_idx, predictions in enumerate(predictions_list):
+            # Get batch size from first prediction
+            batch_size = predictions[0].shape[0]
+            
+            # Decode predictions for this batch
+            all_detections = decode_predictions(predictions, anchors, num_classes, img_size, conf_threshold=0.25)
+            
+            # Process each image in batch
+            for b in range(batch_size):
+                if img_idx >= len(targets_list):
+                    break
+                    
+                detections = all_detections[b]
+                
+                # Apply NMS
+                detections = apply_nms(detections, iou_threshold=0.45)
+                
+                # Get ground truth boxes for this image
+                gt_boxes = []
+                for cls_id, cx, cy, w, h in targets_list[img_idx]:
+                    # Convert normalized cx,cy,w,h to xyxy (absolute pixels)
+                    x1 = (cx - w/2) * img_size
+                    y1 = (cy - h/2) * img_size
+                    x2 = (cx + w/2) * img_size
+                    y2 = (cy + h/2) * img_size
+                    gt_boxes.append([x1, y1, x2, y2, int(cls_id)])
+                
+                total_targets += len(gt_boxes)
+                total_predictions += len(detections)
+                
+                # Match predictions to ground truth
+                matched_gt = set()
+                for det in detections:
+                    if len(det) < 6:
+                        continue
+                    x1, y1, x2, y2, conf, pred_cls = det[:6]
+                    best_iou = 0
+                    best_gt_idx = -1
+                    
+                    for gt_idx, gt in enumerate(gt_boxes):
+                        if gt_idx in matched_gt:
+                            continue
+                        if int(gt[4]) != int(pred_cls):
+                            continue
+                        
+                        iou = compute_iou([x1, y1, x2, y2], gt[:4])
+                        if iou > best_iou:
+                            best_iou = iou
+                            best_gt_idx = gt_idx
+                    
+                    if best_iou >= iou_threshold:
+                        total_correct += 1
+                        if best_gt_idx >= 0:
+                            matched_gt.add(best_gt_idx)
+                
+                img_idx += 1
+        
+        # Compute precision (correct predictions / total predictions)
+        if total_predictions > 0:
+            precision = total_correct / total_predictions
+        else:
+            precision = 0.0
+        
+        # Compute recall (correct predictions / total targets)
+        if total_targets > 0:
+            recall = total_correct / total_targets
+        else:
+            recall = 0.0
+        
+        # F1 score as accuracy metric
+        if precision + recall > 0:
+            accuracy = 2 * (precision * recall) / (precision + recall)
+        else:
+            accuracy = 0.0
+        
+        return accuracy
+    except Exception as e:
+        # If computation fails, return 0
+        import traceback
+        traceback.print_exc()
+        return 0.0
 
 def compute_map50_simple(predictions, targets, num_classes):
     """Compute simplified accuracy metric based on loss."""
@@ -985,6 +1197,12 @@ def run_epoch(dataloader, training=True, epoch_num=0):
     n_batches = 0
     total_batches = len(dataloader)
     
+    # Store predictions and targets for accuracy computation (validation only)
+    # Sample every Nth batch to avoid excessive computation
+    all_predictions = [] if not training else None
+    all_targets = [] if not training else None
+    sample_interval = max(1, total_batches // 5)  # Sample ~5 batches for accuracy
+    
     import time
     start_time = time.time()
     
@@ -1005,6 +1223,11 @@ def run_epoch(dataloader, training=True, epoch_num=0):
                 if torch.isnan(loss) or torch.isinf(loss):
                     print(f"NaN/Inf detected at batch {batch_idx}, stopping training")
                     return None, None, 0
+                
+                # Store predictions for accuracy computation (validation only, sample batches)
+                if not training and batch_idx % sample_interval == 0:  # Sample batches
+                    all_predictions.append([p.detach() for p in predictions])  # Keep on device for now
+                    all_targets.extend(targets)  # Flatten targets list
                 
                 if training:
                     loss.backward()
@@ -1035,12 +1258,27 @@ def run_epoch(dataloader, training=True, epoch_num=0):
     epoch_cls_loss = running_cls_loss / max(1, n_batches)
     total_time = time.time() - start_time
     
-    # NOTE: For object detection, "accuracy" is not a meaningful metric
-    # Real metrics require: NMS, IoU matching, and mAP50 computation
-    # We return 0.0 as placeholder - actual evaluation should use proper mAP50
-    # The loss value itself is the meaningful metric to track
-    # Loss decreasing from ~0.36 to ~0.02 shows good training progress
-    accuracy = 0.0  # Placeholder - not a real accuracy metric
+    # Compute accuracy metric (only during validation, on sampled batches)
+    if not training and all_predictions and len(all_predictions) > 0:
+        try:
+            # Compute accuracy on sampled data
+            # all_predictions is list of batches, each batch is list of scale predictions
+            # all_targets is flattened list of targets per image
+            accuracy = compute_simple_accuracy(
+                all_predictions,
+                all_targets,
+                criterion.anchors,
+                num_classes,
+                img_size=IMG_SIZE,
+                iou_threshold=0.5
+            )
+        except Exception as e:
+            # If computation fails, return 0 and print error for debugging
+            print(f"Warning: Accuracy computation failed: {e}")
+            accuracy = 0.0
+    else:
+        # During training or if no samples, skip accuracy
+        accuracy = 0.0
     
     return epoch_loss, accuracy, total_time
 
@@ -1076,13 +1314,13 @@ if __name__ == '__main__':
         print(f"\nEpoch {epoch}/{NUM_EPOCHS}")
         sys.stdout.flush()
 
-        train_loss, _, train_time = run_epoch(train_loader, training=True, epoch_num=epoch)
+        train_loss, train_accuracy, train_time = run_epoch(train_loader, training=True, epoch_num=epoch)
         
         if train_loss is None:
             print(f"Training stopped due to NaN/Inf at epoch {epoch}")
             break
         
-        val_loss, _, val_time = run_epoch(val_loader, training=False, epoch_num=epoch)
+        val_loss, val_accuracy, val_time = run_epoch(val_loader, training=False, epoch_num=epoch)
 
         lr_scheduler.step()
         current_lr = optimizer.param_groups[0]["lr"]
@@ -1095,10 +1333,16 @@ if __name__ == '__main__':
         val_losses.append(val_loss)
         # Accuracy tracking removed - was not a real metric
         
-        print(f"Epoch {epoch}/{NUM_EPOCHS} | "
-              f"Train Loss: {train_loss:.4f} | Val Loss: {val_loss:.4f} | "
-              f"LR: {current_lr:.6f}")
-        print(f"  Note: 'Accuracy' metric is not computed (requires mAP50 evaluation with NMS)")
+        # Show accuracy if computed (validation only)
+        if val_accuracy > 0:
+            print(f"Epoch {epoch}/{NUM_EPOCHS} | "
+                  f"Train Loss: {train_loss:.4f} | Val Loss: {val_loss:.4f} | "
+                  f"Val Acc (F1): {val_accuracy:.4f} | LR: {current_lr:.6f}")
+        else:
+            print(f"Epoch {epoch}/{NUM_EPOCHS} | "
+                  f"Train Loss: {train_loss:.4f} | Val Loss: {val_loss:.4f} | "
+                  f"LR: {current_lr:.6f}")
+            print(f"  Note: Accuracy computed only during validation (F1 score at IoU=0.5)")
 
         if neptune_run is not None:
             try:
