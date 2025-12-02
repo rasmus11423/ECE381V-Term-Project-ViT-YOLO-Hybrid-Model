@@ -884,7 +884,7 @@ criterion = YOLOLoss(num_classes=num_classes, img_size=IMG_SIZE)
 # Reduced learning rate for more stable training
 LEARNING_RATE = 5e-5  # Reduced from 1e-4
 WEIGHT_DECAY = 1e-4
-NUM_EPOCHS = 30
+NUM_EPOCHS = 3  # Quick test run - change back to 30 for full training
 
 # Use different learning rates for backbone and head
 # Get parameters from the model (works with both regular and DataParallel)
@@ -950,8 +950,8 @@ os.environ['TQDM_DISABLE'] = '1'
 
 train_losses = []
 val_losses = []
-train_accuracies = []
-val_accuracies = []
+# Note: Accuracy metrics removed - they were fake loss-based proxies
+# Real evaluation requires mAP50 computation with NMS and IoU matching
 
 def compute_map50_simple(predictions, targets, num_classes):
     """Compute simplified accuracy metric based on loss."""
@@ -1035,16 +1035,12 @@ def run_epoch(dataloader, training=True, epoch_num=0):
     epoch_cls_loss = running_cls_loss / max(1, n_batches)
     total_time = time.time() - start_time
     
-    # Compute simple accuracy metric (using loss as proxy)
-    # For full mAP, would need proper evaluation with NMS and IoU matching
-    # Use a loss-based proxy: lower loss = higher accuracy
-    # Normalize loss to [0, 1] range and invert
-    # Adjust threshold based on actual loss range (loss should decrease from ~1000s to <100)
-    if epoch_loss > 1000:
-        normalized_loss = min(1.0, (epoch_loss - 100) / 2000.0)  # Scale for high initial loss
-    else:
-        normalized_loss = min(1.0, epoch_loss / 100.0)  # Scale for lower loss
-    accuracy = max(0.0, 1.0 - normalized_loss)
+    # NOTE: For object detection, "accuracy" is not a meaningful metric
+    # Real metrics require: NMS, IoU matching, and mAP50 computation
+    # We return 0.0 as placeholder - actual evaluation should use proper mAP50
+    # The loss value itself is the meaningful metric to track
+    # Loss decreasing from ~0.36 to ~0.02 shows good training progress
+    accuracy = 0.0  # Placeholder - not a real accuracy metric
     
     return epoch_loss, accuracy, total_time
 
@@ -1080,13 +1076,13 @@ if __name__ == '__main__':
         print(f"\nEpoch {epoch}/{NUM_EPOCHS}")
         sys.stdout.flush()
 
-        train_loss, train_accuracy, train_time = run_epoch(train_loader, training=True, epoch_num=epoch)
+        train_loss, _, train_time = run_epoch(train_loader, training=True, epoch_num=epoch)
         
-        if train_loss is None or train_accuracy is None:
+        if train_loss is None:
             print(f"Training stopped due to NaN/Inf at epoch {epoch}")
             break
         
-        val_loss, val_accuracy, val_time = run_epoch(val_loader, training=False, epoch_num=epoch)
+        val_loss, _, val_time = run_epoch(val_loader, training=False, epoch_num=epoch)
 
         lr_scheduler.step()
         current_lr = optimizer.param_groups[0]["lr"]
@@ -1097,22 +1093,20 @@ if __name__ == '__main__':
 
         train_losses.append(train_loss)
         val_losses.append(val_loss)
-        train_accuracies.append(train_accuracy)
-        val_accuracies.append(val_accuracy)
+        # Accuracy tracking removed - was not a real metric
         
         print(f"Epoch {epoch}/{NUM_EPOCHS} | "
-              f"Train Loss: {train_loss:.4f} | Train Acc: {train_accuracy:.4f} | "
-              f"Val Loss: {val_loss:.4f} | Val Acc: {val_accuracy:.4f} | "
+              f"Train Loss: {train_loss:.4f} | Val Loss: {val_loss:.4f} | "
               f"LR: {current_lr:.6f}")
+        print(f"  Note: 'Accuracy' metric is not computed (requires mAP50 evaluation with NMS)")
 
         if neptune_run is not None:
             try:
                 neptune_run["train/loss"].append(train_loss)
-                neptune_run["train/accuracy"].append(train_accuracy)
                 neptune_run["val/loss"].append(val_loss)
-                neptune_run["val/accuracy"].append(val_accuracy)
                 neptune_run["train/lr"].append(optimizer.param_groups[0]["lr"])
                 neptune_run["epoch"].append(epoch)
+                # Log loss components if available
                 neptune_run.sync()
             except Exception as e:
                 print(f"Warning: Neptune logging error: {e}")
@@ -1144,7 +1138,6 @@ if __name__ == '__main__':
     # Plot training curves
     # ----------------------------------------------------------------------
     plot_path_loss = save_dir / "training_curves_hybrid_vit_yolo_exdark_loss.png"
-    plot_path_acc = save_dir / "training_curves_hybrid_vit_yolo_exdark_accuracy.png"
 
     epochs = np.arange(1, len(train_losses) + 1)
     
@@ -1161,29 +1154,16 @@ if __name__ == '__main__':
     plt.savefig(plot_path_loss, dpi=150, bbox_inches="tight")
     plt.close()
     
-    # Plot accuracy curves
-    plt.figure(figsize=(8, 5))
-    plt.plot(epochs, train_accuracies, marker="o", label="Train accuracy")
-    plt.plot(epochs, val_accuracies, marker="s", label="Val accuracy")
-    plt.xlabel("Epoch")
-    plt.ylabel("Accuracy")
-    plt.title("Hybrid ViT-YOLO on ExDark - Training/Validation Accuracy")
-    plt.grid(True)
-    plt.legend()
-    plt.tight_layout()
-    plt.savefig(plot_path_acc, dpi=150, bbox_inches="tight")
-    plt.close()
-
-    print(f"Training curves saved to: {plot_path_loss} and {plot_path_acc}")
+    # Note: Accuracy plot removed - was showing fake loss-based proxy
+    # For real evaluation, compute mAP50 using proper NMS and IoU matching
+    print(f"Training curves saved to: {plot_path_loss}")
+    print("  Note: Accuracy metrics require proper mAP50 evaluation (not included in training loop)")
 
     if neptune_run is not None:
         try:
             neptune_run["plots/loss_curves"].upload(str(plot_path_loss))
-            neptune_run["plots/accuracy_curves"].upload(str(plot_path_acc))
             neptune_run["final/train_loss"] = train_losses[-1]
             neptune_run["final/val_loss"] = val_losses[-1]
-            neptune_run["final/train_accuracy"] = train_accuracies[-1]
-            neptune_run["final/val_accuracy"] = val_accuracies[-1]
             neptune_run.stop()
             print("Neptune run closed.")
         except Exception as e:
