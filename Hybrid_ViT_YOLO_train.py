@@ -721,25 +721,49 @@ class YOLOLoss(nn.Module):
             target_wh = torch.zeros(B, num_anchors, H, W, 2, device=device)
             
             # Match targets to anchors and grids
+            # CRITICAL FIX: Only assign targets to the BEST scale for each object
+            # Small objects -> P3 (80x80), Medium -> P4 (40x40), Large -> P5 (20x20)
             for b in range(batch_size):
                 img_targets = targets[b]
                 if len(img_targets) == 0:
                     continue
                 
                 for cls_id, cx, cy, w, h in img_targets:
-                    # Find best anchor using width/height ratio (YOLOv5 style)
-                    # Match based on aspect ratio similarity, not IoU
-                    best_ratio = float('inf')
+                    # Determine best scale based on object size
+                    # Object area in normalized coordinates
+                    obj_area = w * h
+                    
+                    # Assign to scale based on size:
+                    # Small objects (area < 0.01) -> P3 (80x80, finest grid)
+                    # Medium objects (0.01 <= area < 0.1) -> P4 (40x40)
+                    # Large objects (area >= 0.1) -> P5 (20x20, coarsest grid)
+                    if obj_area < 0.01:
+                        best_scale = 0  # P3
+                    elif obj_area < 0.1:
+                        best_scale = 1  # P4
+                    else:
+                        best_scale = 2  # P5
+                    
+                    # Only assign to this scale if it matches current scale_idx
+                    if scale_idx != best_scale:
+                        continue
+                    
+                    # Find best anchor using IoU-like metric (consider both size and aspect ratio)
+                    best_score = -1
                     best_anchor = 0
                     for a_idx, anchor in enumerate(self.anchors[scale_idx]):
                         anchor_w, anchor_h = anchor
-                        # Compute aspect ratio difference
-                        ratio_w = w / (anchor_w + 1e-6)
-                        ratio_h = h / (anchor_h + 1e-6)
-                        # Use max ratio as similarity metric (closer to 1.0 is better)
-                        ratio = max(ratio_w, 1.0 / ratio_w) * max(ratio_h, 1.0 / ratio_h)
-                        if ratio < best_ratio:
-                            best_ratio = ratio
+                        # Compute IoU-like score: consider both size match and aspect ratio
+                        # Size match: how close are the dimensions?
+                        size_score = 1.0 / (1.0 + abs(w - anchor_w) + abs(h - anchor_h))
+                        # Aspect ratio match
+                        obj_ratio = w / (h + 1e-6)
+                        anchor_ratio = anchor_w / (anchor_h + 1e-6)
+                        aspect_score = 1.0 / (1.0 + abs(obj_ratio - anchor_ratio))
+                        # Combined score
+                        score = size_score * aspect_score
+                        if score > best_score:
+                            best_score = score
                             best_anchor = a_idx
                     
                     # Find grid cell
@@ -794,10 +818,11 @@ class YOLOLoss(nn.Module):
                 cls_loss += self.bce_loss(pred_cls_pos, target_cls_pos)
         
         # Combine losses with proper weighting (YOLOv5 style)
-        # Balance: box_loss is typically smaller, so weight it more
-        box_weight = 0.05
-        obj_weight = 1.0
-        cls_weight = 0.5
+        # Adjusted weights to improve detection learning
+        # Box loss needs higher weight to learn localization better
+        box_weight = 0.1  # Increased from 0.05 to emphasize box regression
+        obj_weight = 1.0  # Keep objectness at 1.0 (critical for detection)
+        cls_weight = 0.5  # Classification weight
         total_loss = box_weight * box_loss + obj_weight * obj_loss + cls_weight * cls_loss
         
         return {
@@ -950,6 +975,8 @@ os.environ['TQDM_DISABLE'] = '1'
 
 train_losses = []
 val_losses = []
+train_accuracies = []
+val_accuracies = []
 
 # ----------------------------------------------------------------------
 # Accuracy computation functions (simplified mAP50)
@@ -972,7 +999,7 @@ def compute_iou(box1, box2):
     
     return intersection / (union + 1e-6)
 
-def decode_predictions(predictions, anchors, num_classes, img_size=640, conf_threshold=0.25):
+def decode_predictions(predictions, anchors, num_classes, img_size=640, conf_threshold=0.1):
     """
     Decode YOLO predictions to bounding boxes.
     
@@ -1087,8 +1114,8 @@ def compute_simple_accuracy(predictions_list, targets_list, anchors, num_classes
             # Get batch size from first prediction
             batch_size = predictions[0].shape[0]
             
-            # Decode predictions for this batch
-            all_detections = decode_predictions(predictions, anchors, num_classes, img_size, conf_threshold=0.25)
+            # Decode predictions for this batch (lower threshold for early training)
+            all_detections = decode_predictions(predictions, anchors, num_classes, img_size, conf_threshold=0.1)
             
             # Process each image in batch
             for b in range(batch_size):
@@ -1197,10 +1224,10 @@ def run_epoch(dataloader, training=True, epoch_num=0):
     n_batches = 0
     total_batches = len(dataloader)
     
-    # Store predictions and targets for accuracy computation (validation only)
-    # Sample every Nth batch to avoid excessive computation
-    all_predictions = [] if not training else None
-    all_targets = [] if not training else None
+    # Store predictions and targets for accuracy computation
+    # Sample every Nth batch to avoid excessive computation (both train and val)
+    all_predictions = []
+    all_targets = []
     sample_interval = max(1, total_batches // 5)  # Sample ~5 batches for accuracy
     
     import time
@@ -1224,8 +1251,8 @@ def run_epoch(dataloader, training=True, epoch_num=0):
                     print(f"NaN/Inf detected at batch {batch_idx}, stopping training")
                     return None, None, 0
                 
-                # Store predictions for accuracy computation (validation only, sample batches)
-                if not training and batch_idx % sample_interval == 0:  # Sample batches
+                # Store predictions for accuracy computation (sample batches for both train and val)
+                if batch_idx % sample_interval == 0:  # Sample batches
                     all_predictions.append([p.detach() for p in predictions])  # Keep on device for now
                     all_targets.extend(targets)  # Flatten targets list
                 
@@ -1258,8 +1285,8 @@ def run_epoch(dataloader, training=True, epoch_num=0):
     epoch_cls_loss = running_cls_loss / max(1, n_batches)
     total_time = time.time() - start_time
     
-    # Compute accuracy metric (only during validation, on sampled batches)
-    if not training and all_predictions and len(all_predictions) > 0:
+    # Compute accuracy metric (on sampled batches for both train and val)
+    if all_predictions and len(all_predictions) > 0:
         try:
             # Compute accuracy on sampled data
             # all_predictions is list of batches, each batch is list of scale predictions
@@ -1274,10 +1301,11 @@ def run_epoch(dataloader, training=True, epoch_num=0):
             )
         except Exception as e:
             # If computation fails, return 0 and print error for debugging
-            print(f"Warning: Accuracy computation failed: {e}")
+            if not training:  # Only print warning during validation
+                print(f"Warning: Accuracy computation failed: {e}")
             accuracy = 0.0
     else:
-        # During training or if no samples, skip accuracy
+        # If no samples, skip accuracy
         accuracy = 0.0
     
     return epoch_loss, accuracy, total_time
@@ -1331,13 +1359,16 @@ if __name__ == '__main__':
 
         train_losses.append(train_loss)
         val_losses.append(val_loss)
-        # Accuracy tracking removed - was not a real metric
+        
+        # Track accuracies (train_accuracy is 0.0 during training, only val is computed)
+        train_accuracies.append(train_accuracy)
+        val_accuracies.append(val_accuracy)
         
         # Show accuracy if computed (validation only)
         if val_accuracy > 0:
             print(f"Epoch {epoch}/{NUM_EPOCHS} | "
                   f"Train Loss: {train_loss:.4f} | Val Loss: {val_loss:.4f} | "
-                  f"Val Acc (F1): {val_accuracy:.4f} | LR: {current_lr:.6f}")
+                  f"Train Acc (F1): {train_accuracy:.4f} | Val Acc (F1): {val_accuracy:.4f} | LR: {current_lr:.6f}")
         else:
             print(f"Epoch {epoch}/{NUM_EPOCHS} | "
                   f"Train Loss: {train_loss:.4f} | Val Loss: {val_loss:.4f} | "
@@ -1348,6 +1379,8 @@ if __name__ == '__main__':
             try:
                 neptune_run["train/loss"].append(train_loss)
                 neptune_run["val/loss"].append(val_loss)
+                neptune_run["train/accuracy"].append(train_accuracy)
+                neptune_run["val/accuracy"].append(val_accuracy)
                 neptune_run["train/lr"].append(optimizer.param_groups[0]["lr"])
                 neptune_run["epoch"].append(epoch)
                 # Log loss components if available
@@ -1381,33 +1414,62 @@ if __name__ == '__main__':
     # ----------------------------------------------------------------------
     # Plot training curves
     # ----------------------------------------------------------------------
-    plot_path_loss = save_dir / "training_curves_hybrid_vit_yolo_exdark_loss.png"
-
     epochs = np.arange(1, len(train_losses) + 1)
     
-    # Plot loss curves
-    plt.figure(figsize=(8, 5))
-    plt.plot(epochs, train_losses, marker="o", label="Train loss")
-    plt.plot(epochs, val_losses, marker="s", label="Val loss")
-    plt.xlabel("Epoch")
-    plt.ylabel("Loss")
-    plt.title("Hybrid ViT-YOLO on ExDark - Training/Validation Loss")
-    plt.grid(True)
-    plt.legend()
+    # Create figure with two subplots: Loss and Accuracy
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 6))
+    
+    # Plot 1: Loss curves
+    ax1.plot(epochs, train_losses, marker="o", label="Train Loss", linewidth=2, markersize=6)
+    ax1.plot(epochs, val_losses, marker="s", label="Val Loss", linewidth=2, markersize=6)
+    ax1.set_xlabel("Epoch", fontsize=12)
+    ax1.set_ylabel("Loss", fontsize=12)
+    ax1.set_title("Hybrid ViT-YOLO on ExDark - Training/Validation Loss", fontsize=14, fontweight='bold')
+    ax1.grid(True, alpha=0.3)
+    ax1.legend(fontsize=11)
+    
+    # Plot 2: Accuracy curves
+    # Filter out epochs where accuracy wasn't computed (0.0 values)
+    acc_epochs = [e for e, acc in zip(epochs, val_accuracies) if acc > 0]
+    train_acc_filtered = [acc for acc, val_acc in zip(train_accuracies, val_accuracies) if val_acc > 0]
+    val_acc_filtered = [acc for acc in val_accuracies if acc > 0]
+    
+    if len(acc_epochs) > 0:
+        ax2.plot(acc_epochs, train_acc_filtered, marker="o", label="Train Acc (F1)", linewidth=2, markersize=6, color='green')
+        ax2.plot(acc_epochs, val_acc_filtered, marker="s", label="Val Acc (F1)", linewidth=2, markersize=6, color='orange')
+        ax2.set_xlabel("Epoch", fontsize=12)
+        ax2.set_ylabel("Accuracy (F1 Score)", fontsize=12)
+        ax2.set_title("Hybrid ViT-YOLO on ExDark - Training/Validation Accuracy", fontsize=14, fontweight='bold')
+        ax2.grid(True, alpha=0.3)
+        ax2.legend(fontsize=11)
+        ax2.set_ylim(bottom=0)  # Start y-axis from 0
+    else:
+        ax2.text(0.5, 0.5, "Accuracy not computed\n(only computed during validation)", 
+                ha='center', va='center', transform=ax2.transAxes, fontsize=12)
+        ax2.set_title("Hybrid ViT-YOLO on ExDark - Accuracy", fontsize=14, fontweight='bold')
+    
     plt.tight_layout()
-    plt.savefig(plot_path_loss, dpi=150, bbox_inches="tight")
+    
+    # Save combined plot
+    plot_path_combined = save_dir / "training_curves_hybrid_vit_yolo_exdark.png"
+    plt.savefig(plot_path_combined, dpi=150, bbox_inches="tight")
     plt.close()
     
-    # Note: Accuracy plot removed - was showing fake loss-based proxy
-    # For real evaluation, compute mAP50 using proper NMS and IoU matching
-    print(f"Training curves saved to: {plot_path_loss}")
-    print("  Note: Accuracy metrics require proper mAP50 evaluation (not included in training loop)")
+    print(f"Training curves saved to: {plot_path_combined}")
+    print(f"  - Loss curves: {len(train_losses)} epochs")
+    if len(acc_epochs) > 0:
+        print(f"  - Accuracy curves: {len(acc_epochs)} epochs (F1 score at IoU=0.5)")
+    else:
+        print(f"  - Accuracy: Not computed (only computed during validation)")
 
     if neptune_run is not None:
         try:
-            neptune_run["plots/loss_curves"].upload(str(plot_path_loss))
+            neptune_run["plots/training_curves"].upload(str(plot_path_combined))
             neptune_run["final/train_loss"] = train_losses[-1]
             neptune_run["final/val_loss"] = val_losses[-1]
+            if len(val_accuracies) > 0 and val_accuracies[-1] > 0:
+                neptune_run["final/train_accuracy"] = train_accuracies[-1]
+                neptune_run["final/val_accuracy"] = val_accuracies[-1]
             neptune_run.stop()
             print("Neptune run closed.")
         except Exception as e:
