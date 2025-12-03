@@ -881,10 +881,10 @@ if device == "cuda" and num_gpus > 1:
 criterion = YOLOLoss(num_classes=num_classes, img_size=IMG_SIZE)
 
 # Optimizer and scheduler
-# Reduced learning rate for more stable training
-LEARNING_RATE = 5e-5  # Reduced from 1e-4
+# Learning rate for fine-tuning: conservative for pretrained backbone, higher for new head
+LEARNING_RATE = 1e-4  # Base LR: 1e-4 for head, 1e-5 for pretrained backbone
 WEIGHT_DECAY = 1e-4
-NUM_EPOCHS = 3  # Quick test run - change back to 30 for full training
+NUM_EPOCHS = 30  # Full training run
 
 # Use different learning rates for backbone and head
 # Get parameters from the model (works with both regular and DataParallel)
