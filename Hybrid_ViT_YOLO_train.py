@@ -907,9 +907,9 @@ criterion = YOLOLoss(num_classes=num_classes, img_size=IMG_SIZE)
 
 # Optimizer and scheduler
 # Learning rate for fine-tuning: conservative for pretrained backbone, higher for new head
-LEARNING_RATE = 1e-4  # Base LR: 1e-4 for head, 1e-5 for pretrained backbone
+LEARNING_RATE = 1e-5  # Base LR: 1e-4 for head, 1e-5 for pretrained backbone
 WEIGHT_DECAY = 1e-4
-NUM_EPOCHS = 30  # Full training run
+NUM_EPOCHS = 100  # Extended training for potentially higher accuracy
 
 # Use different learning rates for backbone and head
 # Get parameters from the model (works with both regular and DataParallel)
@@ -1360,20 +1360,17 @@ if __name__ == '__main__':
         train_losses.append(train_loss)
         val_losses.append(val_loss)
         
-        # Track accuracies (train_accuracy is 0.0 during training, only val is computed)
+        # Track accuracies
         train_accuracies.append(train_accuracy)
         val_accuracies.append(val_accuracy)
         
-        # Show accuracy if computed (validation only)
-        if val_accuracy > 0:
-            print(f"Epoch {epoch}/{NUM_EPOCHS} | "
-                  f"Train Loss: {train_loss:.4f} | Val Loss: {val_loss:.4f} | "
-                  f"Train Acc (F1): {train_accuracy:.4f} | Val Acc (F1): {val_accuracy:.4f} | LR: {current_lr:.6f}")
-        else:
-            print(f"Epoch {epoch}/{NUM_EPOCHS} | "
-                  f"Train Loss: {train_loss:.4f} | Val Loss: {val_loss:.4f} | "
-                  f"LR: {current_lr:.6f}")
-            print(f"  Note: Accuracy computed only during validation (F1 score at IoU=0.5)")
+        # Always show both train and val accuracy (may be 0.0 early on)
+        print(
+            f"Epoch {epoch}/{NUM_EPOCHS} | "
+            f"Train Loss: {train_loss:.4f} | Val Loss: {val_loss:.4f} | "
+            f"Train Acc (F1): {train_accuracy:.4f} | Val Acc (F1): {val_accuracy:.4f} | "
+            f"LR: {current_lr:.6f}"
+        )
 
         if neptune_run is not None:
             try:
