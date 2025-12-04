@@ -721,50 +721,57 @@ class YOLOLoss(nn.Module):
             target_wh = torch.zeros(B, num_anchors, H, W, 2, device=device)
             
             # Match targets to anchors and grids
-            # CRITICAL FIX: Only assign targets to the BEST scale for each object
-            # Small objects -> P3 (80x80), Medium -> P4 (40x40), Large -> P5 (20x20)
+            # FIXED: Allow targets to match to multiple scales if anchors match well (YOLOv5 style)
+            # This is more flexible than assigning to only one scale
             for b in range(batch_size):
                 img_targets = targets[b]
                 if len(img_targets) == 0:
                     continue
                 
                 for cls_id, cx, cy, w, h in img_targets:
-                    # Determine best scale based on object size
-                    # Object area in normalized coordinates
+                    # Check if this object should be assigned to current scale
+                    # Use anchor matching to determine if object fits this scale
                     obj_area = w * h
                     
-                    # Assign to scale based on size:
-                    # Small objects (area < 0.01) -> P3 (80x80, finest grid)
-                    # Medium objects (0.01 <= area < 0.1) -> P4 (40x40)
-                    # Large objects (area >= 0.1) -> P5 (20x20, coarsest grid)
-                    if obj_area < 0.01:
-                        best_scale = 0  # P3
-                    elif obj_area < 0.1:
-                        best_scale = 1  # P4
-                    else:
-                        best_scale = 2  # P5
+                    # Determine if object should be assigned to this scale
+                    # Small objects prefer P3 (80x80), medium P4 (40x40), large P5 (20x20)
+                    # But allow assignment if anchor matches well (more flexible)
+                    should_assign = False
                     
-                    # Only assign to this scale if it matches current scale_idx
-                    if scale_idx != best_scale:
-                        continue
-                    
-                    # Find best anchor using IoU-like metric (consider both size and aspect ratio)
-                    best_score = -1
-                    best_anchor = 0
+                    # Check anchor matching for this scale
+                    best_anchor_match = -1
+                    best_match_score = 0
                     for a_idx, anchor in enumerate(self.anchors[scale_idx]):
                         anchor_w, anchor_h = anchor
-                        # Compute IoU-like score: consider both size match and aspect ratio
-                        # Size match: how close are the dimensions?
+                        # Compute match score based on size and aspect ratio
                         size_score = 1.0 / (1.0 + abs(w - anchor_w) + abs(h - anchor_h))
-                        # Aspect ratio match
                         obj_ratio = w / (h + 1e-6)
                         anchor_ratio = anchor_w / (anchor_h + 1e-6)
                         aspect_score = 1.0 / (1.0 + abs(obj_ratio - anchor_ratio))
-                        # Combined score
-                        score = size_score * aspect_score
-                        if score > best_score:
-                            best_score = score
-                            best_anchor = a_idx
+                        match_score = size_score * aspect_score
+                        
+                        if match_score > best_match_score:
+                            best_match_score = match_score
+                            best_anchor_match = a_idx
+                    
+                    # Assign if anchor matches well (threshold: 0.3) OR if object size fits scale
+                    # This allows objects to be assigned to multiple scales if they match anchors
+                    if best_match_score > 0.3:
+                        should_assign = True
+                    else:
+                        # Fallback: assign based on object size if no good anchor match
+                        if scale_idx == 0 and obj_area < 0.05:  # P3 for small objects
+                            should_assign = True
+                        elif scale_idx == 1 and 0.02 <= obj_area < 0.15:  # P4 for medium
+                            should_assign = True
+                        elif scale_idx == 2 and obj_area >= 0.08:  # P5 for large
+                            should_assign = True
+                    
+                    if not should_assign:
+                        continue
+                    
+                    # Use the best matching anchor (already computed above)
+                    best_anchor = best_anchor_match
                     
                     # Find grid cell
                     grid_x = int(cx * W)
@@ -907,7 +914,7 @@ criterion = YOLOLoss(num_classes=num_classes, img_size=IMG_SIZE)
 
 # Optimizer and scheduler
 # Learning rate for fine-tuning: conservative for pretrained backbone, higher for new head
-LEARNING_RATE = 1e-5  # Base LR: 1e-4 for head, 1e-5 for pretrained backbone
+LEARNING_RATE = 1e-4  # Base LR: 1e-4 for head, 1e-5 for pretrained backbone (restored from working config)
 WEIGHT_DECAY = 1e-4
 NUM_EPOCHS = 100  # Extended training for potentially higher accuracy
 
