@@ -917,6 +917,8 @@ criterion = YOLOLoss(num_classes=num_classes, img_size=IMG_SIZE)
 LEARNING_RATE = 1e-4  # Base LR: 1e-4 for head, 1e-5 for pretrained backbone (restored from working config)
 WEIGHT_DECAY = 1e-4
 NUM_EPOCHS = 100  # Extended training for potentially higher accuracy
+WARMUP_EPOCHS = 5  # Warmup period for stable training start
+GRADIENT_ACCUMULATION_STEPS = 2  # Accumulate gradients to simulate larger batch size
 
 # Use different learning rates for backbone and head
 # Get parameters from the model (works with both regular and DataParallel)
@@ -932,7 +934,65 @@ else:
     # Fallback: use same LR for all parameters
     optimizer = torch.optim.AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY)
 
-lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=NUM_EPOCHS)
+# Cosine annealing with warmup
+def get_lr_scheduler(optimizer, num_epochs, warmup_epochs):
+    """Create learning rate scheduler with warmup."""
+    def lr_lambda(epoch):
+        if epoch < warmup_epochs:
+            # Linear warmup
+            return (epoch + 1) / warmup_epochs
+        else:
+            # Cosine annealing
+            progress = (epoch - warmup_epochs) / (num_epochs - warmup_epochs)
+            return 0.5 * (1 + np.cos(np.pi * progress))
+    
+    return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
+
+lr_scheduler = get_lr_scheduler(optimizer, NUM_EPOCHS, WARMUP_EPOCHS)
+
+# Exponential Moving Average (EMA) for model weights - improves stability
+class EMA:
+    """Exponential Moving Average for model parameters."""
+    def __init__(self, model, decay=0.9999):
+        self.model = model
+        self.decay = decay
+        self.shadow = {}
+        self.backup = {}
+        self.register()
+    
+    def register(self):
+        """Register model parameters."""
+        for name, param in self.model.named_parameters():
+            if param.requires_grad:
+                self.shadow[name] = param.data.clone()
+    
+    def update(self):
+        """Update shadow parameters."""
+        for name, param in self.model.named_parameters():
+            if param.requires_grad:
+                assert name in self.shadow
+                new_average = (1.0 - self.decay) * param.data + self.decay * self.shadow[name]
+                self.shadow[name] = new_average.clone()
+    
+    def apply_shadow(self):
+        """Apply shadow parameters to model."""
+        for name, param in self.model.named_parameters():
+            if param.requires_grad:
+                assert name in self.shadow
+                self.backup[name] = param.data.clone()
+                param.data = self.shadow[name]
+    
+    def restore(self):
+        """Restore original parameters."""
+        for name, param in self.model.named_parameters():
+            if param.requires_grad:
+                assert name in self.backup
+                param.data = self.backup[name]
+        self.backup = {}
+
+# Initialize EMA
+model_for_ema = model.module if hasattr(model, 'module') else model
+ema = EMA(model_for_ema, decay=0.9999)
 
 # ----------------------------------------------------------------------
 # Neptune logging
@@ -1232,10 +1292,14 @@ def run_epoch(dataloader, training=True, epoch_num=0):
     total_batches = len(dataloader)
     
     # Store predictions and targets for accuracy computation
-    # Sample every Nth batch to avoid excessive computation (both train and val)
+    # For validation: use ALL batches for stable metrics
+    # For training: sample to avoid slowing down training
     all_predictions = []
     all_targets = []
-    sample_interval = max(1, total_batches // 5)  # Sample ~5 batches for accuracy
+    if training:
+        sample_interval = max(1, total_batches // 5)  # Sample ~5 batches for training
+    else:
+        sample_interval = 1  # Use ALL batches for validation (stable metrics)
     
     import time
     start_time = time.time()
@@ -1247,29 +1311,43 @@ def run_epoch(dataloader, training=True, epoch_num=0):
             targets = batch["targets"]
 
             if training:
-                optimizer.zero_grad()
+                # Zero gradients only at the start of accumulation cycle
+                if batch_idx % GRADIENT_ACCUMULATION_STEPS == 0:
+                    optimizer.zero_grad()
 
             with torch.set_grad_enabled(training):
                 predictions = model(pixel_values)
                 loss_dict = criterion(predictions, targets)
                 loss = loss_dict["loss"]
                 
+                # Store unscaled loss for reporting (consistent across train/val)
+                loss_unscaled = loss.item()
+                
+                # Scale loss by accumulation steps for gradient accumulation (training only)
+                if training:
+                    loss = loss / GRADIENT_ACCUMULATION_STEPS
+                
                 if torch.isnan(loss) or torch.isinf(loss):
                     print(f"NaN/Inf detected at batch {batch_idx}, stopping training")
                     return None, None, 0
                 
-                # Store predictions for accuracy computation (sample batches for both train and val)
-                if batch_idx % sample_interval == 0:  # Sample batches
+                # Store predictions for accuracy computation
+                if batch_idx % sample_interval == 0:
                     all_predictions.append([p.detach() for p in predictions])  # Keep on device for now
                     all_targets.extend(targets)  # Flatten targets list
                 
                 if training:
                     loss.backward()
-                    # More aggressive gradient clipping for stability
-                    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=0.5)
-                    optimizer.step()
+                    # Update weights only after accumulating gradients
+                    if (batch_idx + 1) % GRADIENT_ACCUMULATION_STEPS == 0 or (batch_idx + 1) == total_batches:
+                        # Gradient clipping for stability
+                        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=0.5)
+                        optimizer.step()
+                        # Update EMA after optimizer step
+                        ema.update()
 
-            running_loss += loss.item()
+            # Report unscaled loss for consistency
+            running_loss += loss_unscaled
             running_box_loss += loss_dict["box_loss"].item()
             running_obj_loss += loss_dict["obj_loss"].item()
             running_cls_loss += loss_dict["cls_loss"].item()
