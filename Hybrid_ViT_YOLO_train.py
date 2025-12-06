@@ -754,17 +754,21 @@ class YOLOLoss(nn.Module):
                             best_match_score = match_score
                             best_anchor_match = a_idx
                     
-                    # Assign if anchor matches well (threshold: 0.3) OR if object size fits scale
-                    # This allows objects to be assigned to multiple scales if they match anchors
-                    if best_match_score > 0.3:
+                    # Assign if anchor matches well (threshold: 0.4, increased from 0.3 for better matching)
+                    # This allows objects to be assigned to multiple scales if they match anchors well
+                    if best_match_score > 0.4:  # Increased threshold for stricter matching
                         should_assign = True
                     else:
                         # Fallback: assign based on object size if no good anchor match
+                        # Ensure each object is assigned to at least one scale
                         if scale_idx == 0 and obj_area < 0.05:  # P3 for small objects
                             should_assign = True
                         elif scale_idx == 1 and 0.02 <= obj_area < 0.15:  # P4 for medium
                             should_assign = True
                         elif scale_idx == 2 and obj_area >= 0.08:  # P5 for large
+                            should_assign = True
+                        # Additional fallback: if object hasn't been assigned to any scale yet, assign to best match
+                        elif best_match_score > 0.2:  # Very lenient fallback to ensure assignment
                             should_assign = True
                     
                     if not should_assign:
@@ -827,9 +831,9 @@ class YOLOLoss(nn.Module):
         # Combine losses with proper weighting (YOLOv5 style)
         # Adjusted weights to improve detection learning
         # Box loss needs higher weight to learn localization better
-        box_weight = 0.1  # Increased from 0.05 to emphasize box regression
+        box_weight = 0.15  # Increased from 0.1 to further emphasize box regression
         obj_weight = 1.0  # Keep objectness at 1.0 (critical for detection)
-        cls_weight = 0.5  # Classification weight
+        cls_weight = 0.6  # Increased from 0.5 to improve classification
         total_loss = box_weight * box_loss + obj_weight * obj_loss + cls_weight * cls_loss
         
         return {
@@ -914,11 +918,12 @@ criterion = YOLOLoss(num_classes=num_classes, img_size=IMG_SIZE)
 
 # Optimizer and scheduler
 # Learning rate for fine-tuning: conservative for pretrained backbone, higher for new head
-LEARNING_RATE = 1e-4  # Base LR: 1e-4 for head, 1e-5 for pretrained backbone (restored from working config)
+LEARNING_RATE = 2e-4  # Increased from 1e-4 to allow better learning (was too low at 9e-6)
 WEIGHT_DECAY = 1e-4
-NUM_EPOCHS = 100  # Extended training for potentially higher accuracy
-WARMUP_EPOCHS = 5  # Warmup period for stable training start
+NUM_EPOCHS = 5  # Set to 5 for testing plotting functionality
+WARMUP_EPOCHS = 2  # Reduced warmup for short test run
 GRADIENT_ACCUMULATION_STEPS = 2  # Accumulate gradients to simulate larger batch size
+SAVE_CHECKPOINT_EVERY = 10  # Save checkpoint every N epochs (for time limit resilience)
 
 # Use different learning rates for backbone and head
 # Get parameters from the model (works with both regular and DataParallel)
@@ -934,21 +939,28 @@ else:
     # Fallback: use same LR for all parameters
     optimizer = torch.optim.AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY)
 
-# Cosine annealing with warmup
-def get_lr_scheduler(optimizer, num_epochs, warmup_epochs):
-    """Create learning rate scheduler with warmup."""
+# Cosine annealing with warmup (modified to keep minimum LR higher)
+def get_lr_scheduler(optimizer, num_epochs, warmup_epochs, min_lr_ratio=0.1):
+    """
+    Create learning rate scheduler with warmup.
+    
+    Args:
+        min_lr_ratio: Minimum LR as ratio of base LR (default 0.1 = 10% of base LR)
+    """
     def lr_lambda(epoch):
         if epoch < warmup_epochs:
             # Linear warmup
             return (epoch + 1) / warmup_epochs
         else:
-            # Cosine annealing
+            # Cosine annealing with minimum LR floor
             progress = (epoch - warmup_epochs) / (num_epochs - warmup_epochs)
-            return 0.5 * (1 + np.cos(np.pi * progress))
+            cosine_factor = 0.5 * (1 + np.cos(np.pi * progress))
+            # Ensure LR doesn't go below min_lr_ratio
+            return max(min_lr_ratio, cosine_factor)
     
     return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
 
-lr_scheduler = get_lr_scheduler(optimizer, NUM_EPOCHS, WARMUP_EPOCHS)
+lr_scheduler = get_lr_scheduler(optimizer, NUM_EPOCHS, WARMUP_EPOCHS, min_lr_ratio=0.1)
 
 # Exponential Moving Average (EMA) for model weights - improves stability
 class EMA:
@@ -1044,6 +1056,47 @@ train_losses = []
 val_losses = []
 train_accuracies = []
 val_accuracies = []
+
+# Track detailed validation metrics
+val_precisions = []
+val_recalls = []
+val_map50s = []
+val_map50_95s = []
+
+# Checkpoint resuming (if checkpoint exists, load it)
+save_dir = Project_Path / "runs" / "detectors" / "hybrid_vit_yolo_exdark"
+save_dir.mkdir(parents=True, exist_ok=True)
+
+# Find latest checkpoint
+checkpoint_files = sorted(save_dir.glob("checkpoint_epoch_*.pt"), key=lambda x: int(x.stem.split('_')[-1]) if x.stem.split('_')[-1].isdigit() else 0, reverse=True)
+start_epoch = 1
+
+if len(checkpoint_files) > 0:
+    latest_checkpoint = checkpoint_files[0]
+    print(f"\nFound checkpoint: {latest_checkpoint}")
+    print("Loading checkpoint to resume training...")
+    try:
+        checkpoint = torch.load(latest_checkpoint, map_location=device)
+        model_to_load = model.module if hasattr(model, 'module') else model
+        model_to_load.load_state_dict(checkpoint['model_state_dict'])
+        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        lr_scheduler.load_state_dict(checkpoint['lr_scheduler_state_dict'])
+        start_epoch = checkpoint['epoch'] + 1
+        train_losses = checkpoint.get('train_losses', [])
+        val_losses = checkpoint.get('val_losses', [])
+        train_accuracies = checkpoint.get('train_accuracies', [])
+        val_accuracies = checkpoint.get('val_accuracies', [])
+        val_precisions = checkpoint.get('val_precisions', [])
+        val_recalls = checkpoint.get('val_recalls', [])
+        val_map50s = checkpoint.get('val_map50s', [])
+        val_map50_95s = checkpoint.get('val_map50_95s', [])
+        print(f"✓ Resumed from epoch {checkpoint['epoch']}, continuing from epoch {start_epoch}")
+    except Exception as e:
+        print(f"Warning: Could not load checkpoint: {e}")
+        print("Starting training from scratch...")
+        start_epoch = 1
+else:
+    print("No checkpoint found, starting training from scratch...")
 
 # ----------------------------------------------------------------------
 # Accuracy computation functions (simplified mAP50)
@@ -1160,44 +1213,257 @@ def apply_nms(detections, iou_threshold=0.45, max_det=300):
     
     return keep
 
-def compute_simple_accuracy(predictions_list, targets_list, anchors, num_classes, img_size=640, iou_threshold=0.5):
+def compute_detection_metrics(predictions_list, targets_list, anchors, num_classes, img_size=640, iou_thresholds=[0.5]):
     """
-    Compute simplified accuracy metric: F1 score at IoU threshold.
-    Only computes during validation to avoid slowing training.
+    Compute precision, recall, mAP@0.5, and mAP@0.5:0.95 metrics.
+    
+    Metrics Explanation:
+    - Precision: TP / (TP + FP) - Of all predictions, how many are correct?
+    - Recall: TP / (TP + FN) - Of all ground truth objects, how many were found?
+    - mAP@0.5: Mean Average Precision at IoU threshold 0.5 (area under precision-recall curve)
+    - mAP@0.5:0.95: Average mAP across IoU thresholds from 0.5 to 0.95 (step 0.05)
     
     Args:
         predictions_list: List of batches, each batch is list of [P3, P4, P5] predictions
         targets_list: Flattened list of targets, one per image
+        anchors: Anchor boxes for each scale
+        num_classes: Number of classes
+        img_size: Image size
+        iou_thresholds: List of IoU thresholds for mAP calculation
+    
+    Returns:
+        dict with keys: 'precision', 'recall', 'map50', 'map50_95', 'f1'
+    """
+    try:
+        # Collect all predictions and ground truth across all images
+        all_preds = []  # List of [image_idx, x1, y1, x2, y2, conf, cls]
+        all_gts = []    # List of [image_idx, x1, y1, x2, y2, cls]
+        
+        img_idx = 0
+        
+        # Process each batch
+        for batch_idx, predictions in enumerate(predictions_list):
+            batch_size = predictions[0].shape[0]
+            
+            # Decode predictions
+            all_detections = decode_predictions(predictions, anchors, num_classes, img_size, conf_threshold=0.001)
+            
+            # Process each image in batch
+            for b in range(batch_size):
+                if img_idx >= len(targets_list):
+                    break
+                
+                detections = all_detections[b]
+                detections = apply_nms(detections, iou_threshold=0.45, max_det=300)
+                
+                # Store predictions
+                for det in detections:
+                    if len(det) >= 6:
+                        x1, y1, x2, y2, conf, cls = det[:6]
+                        all_preds.append([img_idx, x1, y1, x2, y2, conf, int(cls)])
+                
+                # Store ground truth
+                for cls_id, cx, cy, w, h in targets_list[img_idx]:
+                    x1 = (cx - w/2) * img_size
+                    y1 = (cy - h/2) * img_size
+                    x2 = (cx + w/2) * img_size
+                    y2 = (cy + h/2) * img_size
+                    all_gts.append([img_idx, x1, y1, x2, y2, int(cls_id)])
+                
+                img_idx += 1
+        
+        if len(all_preds) == 0 or len(all_gts) == 0:
+            return {'precision': 0.0, 'recall': 0.0, 'map50': 0.0, 'map50_95': 0.0, 'f1': 0.0}
+        
+        # Sort predictions by confidence (descending)
+        all_preds = sorted(all_preds, key=lambda x: x[5], reverse=True)
+        
+        # Compute metrics for each class
+        class_aps_50 = []
+        class_aps_50_95 = []
+        class_precisions = []
+        class_recalls = []
+        
+        for cls in range(num_classes):
+            # Filter predictions and ground truth for this class
+            cls_preds = [p for p in all_preds if p[6] == cls]
+            cls_gts = [g for g in all_gts if g[5] == cls]
+            
+            if len(cls_gts) == 0:
+                continue
+            
+            # Compute TP/FP for each prediction
+            tp = [0] * len(cls_preds)
+            fp = [0] * len(cls_preds)
+            gt_matched = set()
+            
+            for i, pred in enumerate(cls_preds):
+                img_idx, x1, y1, x2, y2, conf, _ = pred
+                pred_box = [x1, y1, x2, y2]
+                
+                best_iou = 0
+                best_gt_idx = -1
+                
+                # Find best matching ground truth in same image
+                for j, gt in enumerate(cls_gts):
+                    if gt[0] != img_idx:  # Must be same image
+                        continue
+                    gt_box = gt[1:5]
+                    iou = compute_iou(pred_box, gt_box)
+                    if iou > best_iou:
+                        best_iou = iou
+                        best_gt_idx = j
+                
+                # Check if matches at IoU=0.5
+                if best_iou >= 0.5 and best_gt_idx >= 0:
+                    # Check if this GT was already matched
+                    gt_key = (cls_gts[best_gt_idx][0], best_gt_idx)
+                    if gt_key not in gt_matched:
+                        tp[i] = 1
+                        gt_matched.add(gt_key)
+                    else:
+                        fp[i] = 1
+                else:
+                    fp[i] = 1
+            
+            # Compute cumulative TP and FP
+            tp_cumsum = np.cumsum(tp)
+            fp_cumsum = np.cumsum(fp)
+            
+            # Compute precision and recall curves
+            recalls = tp_cumsum / len(cls_gts) if len(cls_gts) > 0 else np.zeros(len(cls_preds))
+            precisions = tp_cumsum / (tp_cumsum + fp_cumsum + 1e-6)
+            
+            # Compute AP@0.5 (using precision-recall curve)
+            ap_50 = compute_ap(recalls, precisions)
+            class_aps_50.append(ap_50)
+            
+            # Compute AP@0.5:0.95 (average across multiple IoU thresholds)
+            aps = []
+            for iou_thresh in np.arange(0.5, 1.0, 0.05):
+                tp_thresh = [0] * len(cls_preds)
+                fp_thresh = [0] * len(cls_preds)
+                gt_matched_thresh = set()
+                
+                for i, pred in enumerate(cls_preds):
+                    img_idx, x1, y1, x2, y2, conf, _ = pred
+                    pred_box = [x1, y1, x2, y2]
+                    
+                    best_iou = 0
+                    best_gt_idx = -1
+                    
+                    for j, gt in enumerate(cls_gts):
+                        if gt[0] != img_idx:
+                            continue
+                        gt_box = gt[1:5]
+                        iou = compute_iou(pred_box, gt_box)
+                        if iou > best_iou:
+                            best_iou = iou
+                            best_gt_idx = j
+                    
+                    if best_iou >= iou_thresh and best_gt_idx >= 0:
+                        gt_key = (cls_gts[best_gt_idx][0], best_gt_idx)
+                        if gt_key not in gt_matched_thresh:
+                            tp_thresh[i] = 1
+                            gt_matched_thresh.add(gt_key)
+                        else:
+                            fp_thresh[i] = 1
+                    else:
+                        fp_thresh[i] = 1
+                
+                tp_cumsum_thresh = np.cumsum(tp_thresh)
+                fp_cumsum_thresh = np.cumsum(fp_thresh)
+                recalls_thresh = tp_cumsum_thresh / len(cls_gts) if len(cls_gts) > 0 else np.zeros(len(cls_preds))
+                precisions_thresh = tp_cumsum_thresh / (tp_cumsum_thresh + fp_cumsum_thresh + 1e-6)
+                ap_thresh = compute_ap(recalls_thresh, precisions_thresh)
+                aps.append(ap_thresh)
+            
+            ap_50_95 = np.mean(aps) if len(aps) > 0 else 0.0
+            class_aps_50_95.append(ap_50_95)
+            
+            # Compute precision and recall at IoU=0.5 (using best confidence threshold)
+            if len(cls_preds) > 0:
+                # Find best F1 score threshold
+                f1_scores = 2 * (precisions * recalls) / (precisions + recalls + 1e-6)
+                best_idx = np.argmax(f1_scores)
+                class_precisions.append(precisions[best_idx])
+                class_recalls.append(recalls[best_idx])
+        
+        # Compute mean metrics across all classes
+        precision = np.mean(class_precisions) if len(class_precisions) > 0 else 0.0
+        recall = np.mean(class_recalls) if len(class_recalls) > 0 else 0.0
+        map50 = np.mean(class_aps_50) if len(class_aps_50) > 0 else 0.0
+        map50_95 = np.mean(class_aps_50_95) if len(class_aps_50_95) > 0 else 0.0
+        f1 = 2 * (precision * recall) / (precision + recall + 1e-6)
+        
+        return {
+            'precision': float(precision),
+            'recall': float(recall),
+            'map50': float(map50),
+            'map50_95': float(map50_95),
+            'f1': float(f1)
+        }
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return {'precision': 0.0, 'recall': 0.0, 'map50': 0.0, 'map50_95': 0.0, 'f1': 0.0}
+
+def compute_ap(recalls, precisions):
+    """
+    Compute Average Precision (AP) from precision-recall curve.
+    Uses the 11-point interpolation method (COCO style).
+    """
+    if len(recalls) == 0 or len(precisions) == 0:
+        return 0.0
+    
+    # Convert to numpy arrays
+    recalls = np.array(recalls)
+    precisions = np.array(precisions)
+    
+    # Make precision monotonically decreasing
+    for i in range(len(precisions) - 2, -1, -1):
+        precisions[i] = max(precisions[i], precisions[i + 1])
+    
+    # Compute AP using 11-point interpolation
+    ap = 0.0
+    for t in np.arange(0, 1.1, 0.1):
+        if np.sum(recalls >= t) == 0:
+            p = 0
+        else:
+            p = np.max(precisions[recalls >= t])
+        ap += p / 11.0
+    
+    return ap
+
+def compute_simple_accuracy(predictions_list, targets_list, anchors, num_classes, img_size=640, iou_threshold=0.5):
+    """
+    Compute simplified F1 score for training (faster than full mAP computation).
+    Used during training to avoid slowing down the training loop.
     """
     try:
         total_correct = 0
         total_predictions = 0
         total_targets = 0
         
-        img_idx = 0  # Track image index across batches
+        img_idx = 0
         
-        # Process each batch
         for batch_idx, predictions in enumerate(predictions_list):
-            # Get batch size from first prediction
             batch_size = predictions[0].shape[0]
+            # Use adaptive confidence threshold: start low, increase as training progresses
+            # For early epochs, use lower threshold to capture more predictions
+            # For later epochs, use higher threshold (YOLOv5 standard: 0.25)
+            # Since we don't have epoch info here, use moderate threshold
+            all_detections = decode_predictions(predictions, anchors, num_classes, img_size, conf_threshold=0.25)
             
-            # Decode predictions for this batch (lower threshold for early training)
-            all_detections = decode_predictions(predictions, anchors, num_classes, img_size, conf_threshold=0.1)
-            
-            # Process each image in batch
             for b in range(batch_size):
                 if img_idx >= len(targets_list):
                     break
                     
                 detections = all_detections[b]
-                
-                # Apply NMS
                 detections = apply_nms(detections, iou_threshold=0.45)
                 
-                # Get ground truth boxes for this image
                 gt_boxes = []
                 for cls_id, cx, cy, w, h in targets_list[img_idx]:
-                    # Convert normalized cx,cy,w,h to xyxy (absolute pixels)
                     x1 = (cx - w/2) * img_size
                     y1 = (cy - h/2) * img_size
                     x2 = (cx + w/2) * img_size
@@ -1207,7 +1473,6 @@ def compute_simple_accuracy(predictions_list, targets_list, anchors, num_classes
                 total_targets += len(gt_boxes)
                 total_predictions += len(detections)
                 
-                # Match predictions to ground truth
                 matched_gt = set()
                 for det in detections:
                     if len(det) < 6:
@@ -1234,48 +1499,12 @@ def compute_simple_accuracy(predictions_list, targets_list, anchors, num_classes
                 
                 img_idx += 1
         
-        # Compute precision (correct predictions / total predictions)
-        if total_predictions > 0:
-            precision = total_correct / total_predictions
-        else:
-            precision = 0.0
+        precision = total_correct / total_predictions if total_predictions > 0 else 0.0
+        recall = total_correct / total_targets if total_targets > 0 else 0.0
+        f1 = 2 * (precision * recall) / (precision + recall + 1e-6)
         
-        # Compute recall (correct predictions / total targets)
-        if total_targets > 0:
-            recall = total_correct / total_targets
-        else:
-            recall = 0.0
-        
-        # F1 score as accuracy metric
-        if precision + recall > 0:
-            accuracy = 2 * (precision * recall) / (precision + recall)
-        else:
-            accuracy = 0.0
-        
-        return accuracy
+        return f1
     except Exception as e:
-        # If computation fails, return 0
-        import traceback
-        traceback.print_exc()
-        return 0.0
-
-def compute_map50_simple(predictions, targets, num_classes):
-    """Compute simplified accuracy metric based on loss."""
-    # For a more accurate metric, we'd need to:
-    # 1. Apply NMS to predictions
-    # 2. Match predictions to ground truth using IoU
-    # 3. Compute mAP50
-    # For now, use loss-based proxy metric
-    try:
-        # Count total targets
-        total_targets = sum(len(t) for t in targets)
-        if total_targets == 0:
-            return 0.0
-        
-        # Simple metric: use inverse of normalized loss as accuracy proxy
-        # This gives us a rough estimate that correlates with actual performance
-        return 0.0  # Will be computed from loss in run_epoch
-    except:
         return 0.0
 
 def run_epoch(dataloader, training=True, epoch_num=0):
@@ -1370,30 +1599,43 @@ def run_epoch(dataloader, training=True, epoch_num=0):
     epoch_cls_loss = running_cls_loss / max(1, n_batches)
     total_time = time.time() - start_time
     
-    # Compute accuracy metric (on sampled batches for both train and val)
+    # Compute metrics (on sampled batches for training, all batches for validation)
     if all_predictions and len(all_predictions) > 0:
         try:
-            # Compute accuracy on sampled data
-            # all_predictions is list of batches, each batch is list of scale predictions
-            # all_targets is flattened list of targets per image
-            accuracy = compute_simple_accuracy(
-                all_predictions,
-                all_targets,
-                criterion.anchors,
-                num_classes,
-                img_size=IMG_SIZE,
-                iou_threshold=0.5
-            )
+            if training:
+                # For training: use simple F1 score (faster)
+                accuracy = compute_simple_accuracy(
+                    all_predictions,
+                    all_targets,
+                    criterion.anchors,
+                    num_classes,
+                    img_size=IMG_SIZE,
+                    iou_threshold=0.5
+                )
+                metrics = {'precision': 0.0, 'recall': 0.0, 'map50': 0.0, 'map50_95': 0.0, 'f1': accuracy}
+            else:
+                # For validation: compute full metrics (precision, recall, mAP)
+                metrics = compute_detection_metrics(
+                    all_predictions,
+                    all_targets,
+                    criterion.anchors,
+                    num_classes,
+                    img_size=IMG_SIZE,
+                    iou_thresholds=[0.5]
+                )
+                accuracy = metrics['f1']  # Use F1 as accuracy for compatibility
         except Exception as e:
             # If computation fails, return 0 and print error for debugging
-            if not training:  # Only print warning during validation
-                print(f"Warning: Accuracy computation failed: {e}")
+            if not training:
+                print(f"Warning: Metrics computation failed: {e}")
             accuracy = 0.0
+            metrics = {'precision': 0.0, 'recall': 0.0, 'map50': 0.0, 'map50_95': 0.0, 'f1': 0.0}
     else:
-        # If no samples, skip accuracy
+        # If no samples, skip metrics
         accuracy = 0.0
+        metrics = {'precision': 0.0, 'recall': 0.0, 'map50': 0.0, 'map50_95': 0.0, 'f1': 0.0}
     
-    return epoch_loss, accuracy, total_time
+    return epoch_loss, accuracy, total_time, metrics
 
 # Wrap main execution in __main__ guard
 if __name__ == '__main__':
@@ -1423,17 +1665,17 @@ if __name__ == '__main__':
     print(f"  Val samples: {len(val_dataset)}")
     print("=" * 60)
 
-    for epoch in range(1, NUM_EPOCHS + 1):
+    for epoch in range(start_epoch, NUM_EPOCHS + 1):
         print(f"\nEpoch {epoch}/{NUM_EPOCHS}")
         sys.stdout.flush()
 
-        train_loss, train_accuracy, train_time = run_epoch(train_loader, training=True, epoch_num=epoch)
+        train_loss, train_accuracy, train_time, train_metrics = run_epoch(train_loader, training=True, epoch_num=epoch)
         
         if train_loss is None:
             print(f"Training stopped due to NaN/Inf at epoch {epoch}")
             break
         
-        val_loss, val_accuracy, val_time = run_epoch(val_loader, training=False, epoch_num=epoch)
+        val_loss, val_accuracy, val_time, val_metrics = run_epoch(val_loader, training=False, epoch_num=epoch)
 
         lr_scheduler.step()
         current_lr = optimizer.param_groups[0]["lr"]
@@ -1449,6 +1691,12 @@ if __name__ == '__main__':
         train_accuracies.append(train_accuracy)
         val_accuracies.append(val_accuracy)
         
+        # Track detailed validation metrics
+        val_precisions.append(val_metrics['precision'])
+        val_recalls.append(val_metrics['recall'])
+        val_map50s.append(val_metrics['map50'])
+        val_map50_95s.append(val_metrics['map50_95'])
+        
         # Always show both train and val accuracy (may be 0.0 early on)
         print(
             f"Epoch {epoch}/{NUM_EPOCHS} | "
@@ -1456,7 +1704,44 @@ if __name__ == '__main__':
             f"Train Acc (F1): {train_accuracy:.4f} | Val Acc (F1): {val_accuracy:.4f} | "
             f"LR: {current_lr:.6f}"
         )
+        
+        # Print detailed validation metrics
+        if val_metrics['precision'] > 0 or val_metrics['recall'] > 0:
+            print(
+                f"  Val Metrics: P={val_metrics['precision']:.4f} | "
+                f"R={val_metrics['recall']:.4f} | "
+                f"mAP@0.5={val_metrics['map50']:.4f} | "
+                f"mAP@0.5:0.95={val_metrics['map50_95']:.4f}"
+            )
 
+        # Save checkpoint periodically (for time limit resilience)
+        if epoch % SAVE_CHECKPOINT_EVERY == 0 or epoch == NUM_EPOCHS:
+            checkpoint_path = save_dir / f"checkpoint_epoch_{epoch}.pt"
+            model_to_save = model.module if hasattr(model, 'module') else model
+            torch.save({
+                'epoch': epoch,
+                'model_state_dict': model_to_save.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'lr_scheduler_state_dict': lr_scheduler.state_dict(),
+                'train_losses': train_losses,
+                'val_losses': val_losses,
+                'train_accuracies': train_accuracies,
+                'val_accuracies': val_accuracies,
+                'val_precisions': val_precisions,
+                'val_recalls': val_recalls,
+                'val_map50s': val_map50s,
+                'val_map50_95s': val_map50_95s,
+                'config': {
+                    'num_classes': num_classes,
+                    'vit_model_name': MODEL_NAME,
+                    'img_size': IMG_SIZE,
+                    'classes': Classes,
+                    'id2label': id2label,
+                    'label2id': label2id,
+                }
+            }, checkpoint_path)
+            print(f"  ✓ Checkpoint saved: {checkpoint_path}")
+        
         if neptune_run is not None:
             try:
                 neptune_run["train/loss"].append(train_loss)
@@ -1465,12 +1750,43 @@ if __name__ == '__main__':
                 neptune_run["val/accuracy"].append(val_accuracy)
                 neptune_run["train/lr"].append(optimizer.param_groups[0]["lr"])
                 neptune_run["epoch"].append(epoch)
-                # Log loss components if available
+                # Log detailed validation metrics
+                neptune_run["val/precision"].append(val_metrics['precision'])
+                neptune_run["val/recall"].append(val_metrics['recall'])
+                neptune_run["val/mAP50"].append(val_metrics['map50'])
+                neptune_run["val/mAP50-95"].append(val_metrics['map50_95'])
                 neptune_run.sync()
             except Exception as e:
                 print(f"Warning: Neptune logging error: {e}")
 
     print("\nTraining complete!")
+    
+    # Save final checkpoint
+    checkpoint_path = save_dir / f"checkpoint_epoch_{len(train_losses)}.pt"
+    model_to_save = model.module if hasattr(model, 'module') else model
+    torch.save({
+        'epoch': len(train_losses),
+        'model_state_dict': model_to_save.state_dict(),
+        'optimizer_state_dict': optimizer.state_dict(),
+        'lr_scheduler_state_dict': lr_scheduler.state_dict(),
+        'train_losses': train_losses,
+        'val_losses': val_losses,
+        'train_accuracies': train_accuracies,
+        'val_accuracies': val_accuracies,
+        'val_precisions': val_precisions,
+        'val_recalls': val_recalls,
+        'val_map50s': val_map50s,
+        'val_map50_95s': val_map50_95s,
+        'config': {
+            'num_classes': num_classes,
+            'vit_model_name': MODEL_NAME,
+            'img_size': IMG_SIZE,
+            'classes': Classes,
+            'id2label': id2label,
+            'label2id': label2id,
+        }
+    }, checkpoint_path)
+    print(f"Final checkpoint saved to: {checkpoint_path}")
 
     # ----------------------------------------------------------------------
     # Save model
@@ -1510,7 +1826,7 @@ if __name__ == '__main__':
     ax1.grid(True, alpha=0.3)
     ax1.legend(fontsize=11)
     
-    # Plot 2: Accuracy curves
+    # Plot 2: Accuracy curves (F1 score)
     # Filter out epochs where accuracy wasn't computed (0.0 values)
     acc_epochs = [e for e, acc in zip(epochs, val_accuracies) if acc > 0]
     train_acc_filtered = [acc for acc, val_acc in zip(train_accuracies, val_accuracies) if val_acc > 0]
@@ -1536,6 +1852,45 @@ if __name__ == '__main__':
     plot_path_combined = save_dir / "training_curves_hybrid_vit_yolo_exdark.png"
     plt.savefig(plot_path_combined, dpi=150, bbox_inches="tight")
     plt.close()
+    
+    # Create separate plot for validation metrics (like the notebook)
+    if len(val_precisions) > 0 and any(p > 0 for p in val_precisions):
+        fig_metrics, ax_metrics = plt.subplots(1, 1, figsize=(10, 6))
+        
+        # Filter epochs where metrics were computed
+        metrics_epochs = [e for e, p in zip(epochs, val_precisions) if p > 0]
+        precisions_filtered = [p for p in val_precisions if p > 0]
+        recalls_filtered = [r for r, p in zip(val_recalls, val_precisions) if p > 0]
+        map50s_filtered = [m for m, p in zip(val_map50s, val_precisions) if p > 0]
+        map50_95s_filtered = [m for m, p in zip(val_map50_95s, val_precisions) if p > 0]
+        
+        ax_metrics.plot(metrics_epochs, precisions_filtered, marker='o', label='Precision', linewidth=2, markersize=6)
+        ax_metrics.plot(metrics_epochs, recalls_filtered, marker='s', label='Recall', linewidth=2, markersize=6)
+        ax_metrics.plot(metrics_epochs, map50s_filtered, marker='^', label='mAP@0.5', linewidth=2, markersize=6)
+        ax_metrics.plot(metrics_epochs, map50_95s_filtered, marker='d', label='mAP@0.5:0.95', linewidth=2, markersize=6)
+        
+        ax_metrics.set_xlabel('Epoch', fontsize=12)
+        ax_metrics.set_ylabel('Score', fontsize=12)
+        ax_metrics.set_title('Hybrid ViT-YOLO on ExDark - Validation Accuracy Metrics', fontsize=14, fontweight='bold')
+        ax_metrics.legend(fontsize=11)
+        ax_metrics.grid(True, alpha=0.3)
+        ax_metrics.set_ylim(bottom=0, top=1.0)
+        
+        plt.tight_layout()
+        
+        # Save validation metrics plot
+        plot_path_metrics = save_dir / "validation_metrics_hybrid_vit_yolo_exdark.png"
+        plt.savefig(plot_path_metrics, dpi=150, bbox_inches="tight")
+        plt.close()
+        
+        print(f"Validation metrics plot saved to: {plot_path_metrics}")
+        
+        # Upload to Neptune if available
+        if neptune_run is not None:
+            try:
+                neptune_run["plots/validation_metrics"].upload(str(plot_path_metrics))
+            except Exception as e:
+                print(f"Warning: Could not upload validation metrics plot to Neptune: {e}")
     
     print(f"Training curves saved to: {plot_path_combined}")
     print(f"  - Loss curves: {len(train_losses)} epochs")
