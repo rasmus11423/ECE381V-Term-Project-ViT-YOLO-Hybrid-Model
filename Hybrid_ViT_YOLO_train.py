@@ -920,8 +920,8 @@ criterion = YOLOLoss(num_classes=num_classes, img_size=IMG_SIZE)
 # Learning rate for fine-tuning: conservative for pretrained backbone, higher for new head
 LEARNING_RATE = 2e-4  # Increased from 1e-4 to allow better learning (was too low at 9e-6)
 WEIGHT_DECAY = 1e-4
-NUM_EPOCHS = 5  # Set to 5 for testing plotting functionality
-WARMUP_EPOCHS = 2  # Reduced warmup for short test run
+NUM_EPOCHS = 15  # Increased to 15 epochs for better training
+WARMUP_EPOCHS = 3  # Warmup for 3 epochs (20% of total epochs)
 GRADIENT_ACCUMULATION_STEPS = 2  # Accumulate gradients to simulate larger batch size
 SAVE_CHECKPOINT_EVERY = 10  # Save checkpoint every N epochs (for time limit resilience)
 
@@ -1449,11 +1449,10 @@ def compute_simple_accuracy(predictions_list, targets_list, anchors, num_classes
         
         for batch_idx, predictions in enumerate(predictions_list):
             batch_size = predictions[0].shape[0]
-            # Use adaptive confidence threshold: start low, increase as training progresses
-            # For early epochs, use lower threshold to capture more predictions
-            # For later epochs, use higher threshold (YOLOv5 standard: 0.25)
-            # Since we don't have epoch info here, use moderate threshold
-            all_detections = decode_predictions(predictions, anchors, num_classes, img_size, conf_threshold=0.25)
+            # Use very low confidence threshold for training accuracy (early epochs need very low threshold)
+            # Training accuracy uses 0.01 to capture predictions even when model confidence is very low
+            # This ensures we capture predictions during early training when confidence is minimal
+            all_detections = decode_predictions(predictions, anchors, num_classes, img_size, conf_threshold=0.01)
             
             for b in range(batch_size):
                 if img_idx >= len(targets_list):
@@ -1522,11 +1521,13 @@ def run_epoch(dataloader, training=True, epoch_num=0):
     
     # Store predictions and targets for accuracy computation
     # For validation: use ALL batches for stable metrics
-    # For training: sample to avoid slowing down training
+    # For training: Only compute accuracy at END of epoch to avoid slowing down training
+    # We'll collect predictions during training but only compute metrics at the end
     all_predictions = []
     all_targets = []
     if training:
-        sample_interval = max(1, total_batches // 5)  # Sample ~5 batches for training
+        # For training: sample fewer batches to reduce overhead, but still collect enough for accuracy
+        sample_interval = max(1, total_batches // 10)  # Sample ~10% of batches (was 5 batches total)
     else:
         sample_interval = 1  # Use ALL batches for validation (stable metrics)
     
@@ -1560,9 +1561,11 @@ def run_epoch(dataloader, training=True, epoch_num=0):
                     print(f"NaN/Inf detected at batch {batch_idx}, stopping training")
                     return None, None, 0
                 
-                # Store predictions for accuracy computation
+                # Store predictions for accuracy computation (only sampled batches to reduce overhead)
+                # Note: We compute accuracy at END of epoch, not during training loop, to avoid slowdown
                 if batch_idx % sample_interval == 0:
-                    all_predictions.append([p.detach() for p in predictions])  # Keep on device for now
+                    # Move predictions to CPU and detach to free GPU memory
+                    all_predictions.append([p.detach().cpu() for p in predictions])
                     all_targets.extend(targets)  # Flatten targets list
                 
                 if training:
@@ -1626,8 +1629,13 @@ def run_epoch(dataloader, training=True, epoch_num=0):
                 accuracy = metrics['f1']  # Use F1 as accuracy for compatibility
         except Exception as e:
             # If computation fails, return 0 and print error for debugging
-            if not training:
-                print(f"Warning: Metrics computation failed: {e}")
+            import traceback
+            print(f"Warning: Metrics computation failed: {e}")
+            if training:
+                print(f"  Training accuracy computation error (this is non-critical)")
+            else:
+                print(f"  Validation metrics computation error:")
+                traceback.print_exc()
             accuracy = 0.0
             metrics = {'precision': 0.0, 'recall': 0.0, 'map50': 0.0, 'map50_95': 0.0, 'f1': 0.0}
     else:
@@ -1755,9 +1763,14 @@ if __name__ == '__main__':
                 neptune_run["val/recall"].append(val_metrics['recall'])
                 neptune_run["val/mAP50"].append(val_metrics['map50'])
                 neptune_run["val/mAP50-95"].append(val_metrics['map50_95'])
-                neptune_run.sync()
+                # Sync periodically (not every epoch to reduce overhead)
+                if epoch % 5 == 0 or epoch == NUM_EPOCHS:
+                    neptune_run.sync()
             except Exception as e:
-                print(f"Warning: Neptune logging error: {e}")
+                print(f"Warning: Neptune logging error at epoch {epoch}: {e}")
+                import traceback
+                traceback.print_exc()
+                # Continue training even if Neptune fails
 
     print("\nTraining complete!")
     
@@ -1848,8 +1861,8 @@ if __name__ == '__main__':
     
     plt.tight_layout()
     
-    # Save combined plot
-    plot_path_combined = save_dir / "training_curves_hybrid_vit_yolo_exdark.png"
+    # Save combined plot to project root (same folder as script)
+    plot_path_combined = Project_Path / "training_curves_hybrid_vit_yolo_exdark.png"
     plt.savefig(plot_path_combined, dpi=150, bbox_inches="tight")
     plt.close()
     
@@ -1878,8 +1891,8 @@ if __name__ == '__main__':
         
         plt.tight_layout()
         
-        # Save validation metrics plot
-        plot_path_metrics = save_dir / "validation_metrics_hybrid_vit_yolo_exdark.png"
+        # Save validation metrics plot to project root (same folder as script)
+        plot_path_metrics = Project_Path / "validation_metrics_hybrid_vit_yolo_exdark.png"
         plt.savefig(plot_path_metrics, dpi=150, bbox_inches="tight")
         plt.close()
         
