@@ -920,8 +920,8 @@ criterion = YOLOLoss(num_classes=num_classes, img_size=IMG_SIZE)
 # Learning rate for fine-tuning: conservative for pretrained backbone, higher for new head
 LEARNING_RATE = 2e-4  # Increased from 1e-4 to allow better learning (was too low at 9e-6)
 WEIGHT_DECAY = 1e-4
-NUM_EPOCHS = 15  # Increased to 15 epochs for better training
-WARMUP_EPOCHS = 3  # Warmup for 3 epochs (20% of total epochs)
+NUM_EPOCHS = 30  # Increased to 30 epochs for better training and convergence
+WARMUP_EPOCHS = 5  # Warmup for 5 epochs (~17% of total epochs)
 GRADIENT_ACCUMULATION_STEPS = 2  # Accumulate gradients to simulate larger batch size
 SAVE_CHECKPOINT_EVERY = 10  # Save checkpoint every N epochs (for time limit resilience)
 
