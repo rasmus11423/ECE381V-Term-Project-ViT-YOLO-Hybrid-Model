@@ -1,0 +1,126 @@
+Loading required modules...
+==========================================
+Job ID: 458069
+Node(s): i614-[032-034,041-043]
+Start Time: Thu Nov 20 12:43:37 PM CST 2025
+Working Directory: /home1/11112/rasmus1142/ECE381V-Term-Project-ViT-YOLO-Hybrid-Model
+Python version: Python 3.11.8
+==========================================
+Verifying required packages...
+PyTorch: 2.5.1
+Transformers: 4.57.1
+CUDA available: False
+Python 3.11.8
+/home1/11112/rasmus1142/ECE381V-Term-Project-ViT-YOLO-Hybrid-Model/venv/bin/python
+============================================================
+GPU/CUDA Diagnostics:
+============================================================
+✗ nvidia-smi error: [Errno 2] No such file or directory: 'nvidia-smi'
+CUDA_VISIBLE_DEVICES: Not set
+CUDA_HOME/CUDA_PATH: /home1/apps/nvidia/Linux_aarch64/25.3/cuda/12.8
+============================================================
+============================================================
+Environment Check:
+============================================================
+Project root: /home1/11112/rasmus1142/ECE381V-Term-Project-ViT-YOLO-Hybrid-Model
+Data dir: /home1/11112/rasmus1142/ECE381V-Term-Project-ViT-YOLO-Hybrid-Model/Data
+GroundTruth dir: /home1/11112/rasmus1142/ECE381V-Term-Project-ViT-YOLO-Hybrid-Model/GroundTruth
+Working directory: /home1/11112/rasmus1142/ECE381V-Term-Project-ViT-YOLO-Hybrid-Model
+Python executable: /home1/11112/rasmus1142/ECE381V-Term-Project-ViT-YOLO-Hybrid-Model/venv/bin/python
+Virtual environment: Yes
+Venv path: /home1/11112/rasmus1142/ECE381V-Term-Project-ViT-YOLO-Hybrid-Model/venv
+============================================================
+ExDARK already present, skipping download.
+ExDARK annotation already present, skipping download.
+Classes found under Data/ExDark: ['Bicycle', 'Boat', 'Bottle', 'Bus', 'Car', 'Cat', 'Chair', 'Cup', 'Dog', 'Motorbike', 'People', 'Table']
+Total images in Data/ExDark: 7363
+Per-class image counts: {'Bicycle': 652, 'Boat': 679, 'Bottle': 547, 'Bus': 527, 'Car': 638, 'Cat': 735, 'Chair': 648, 'Cup': 519, 'Dog': 801, 'Motorbike': 503, 'People': 609, 'Table': 505}
+GroundTruth root: /home1/11112/rasmus1142/ECE381V-Term-Project-ViT-YOLO-Hybrid-Model/GroundTruth/ExDark_Annno
+Total GT .txt files for listed classes: 7363
+Per-class GT counts (txt files): {'Bicycle': 652, 'Boat': 679, 'Bottle': 547, 'Bus': 527, 'Car': 638, 'Cat': 735, 'Chair': 648, 'Cup': 519, 'Dog': 801, 'Motorbike': 503, 'People': 609, 'Table': 505}
+Annotated Images: 7361, Missing GroundTruth.txt: 1, Bad Images: 0
+{'train': 5152, 'val': 1104, 'test': 1105} Total: 7361
+YOLO dataset built at: /home1/11112/rasmus1142/ECE381V-Term-Project-ViT-YOLO-Hybrid-Model/Output
+
+============================================================
+YOLOS Training Setup
+============================================================
+Detected classes: ['Bicycle', 'Boat', 'Bottle', 'Bus', 'Car', 'Cat', 'Chair', 'Cup', 'Dog', 'Motorbike', 'People', 'Table']
+Number of classes: 12
+============================================================
+Loading image processor and config from 'hustvl/yolos-small'...
+✓ Image processor loaded successfully
+Loaded 6194 samples from train
+Loaded 5176 samples from val
+Batch size set to 1000 as requested.
+⚠️  WARNING: Batch size 1000 is very large for object detection!
+   Typical batch sizes are 4-32. You may encounter OOM (Out of Memory) errors.
+   If training fails with CUDA OOM, reduce BATCH_SIZE to a smaller value (e.g., 8, 16, or 32).
+  Using single-threaded data loading (NUM_WORKERS=0) for SLURM compatibility
+
+Creating DataLoaders...
+  Train dataset size: 6194
+  Val dataset size: 5176
+  Batch size: 1000
+  Number of workers: 0
+Creating train DataLoader...
+✓ Train DataLoader created
+Creating val DataLoader...
+✓ Val DataLoader created
+
+============================================================
+PyTorch CUDA Diagnostics:
+============================================================
+PyTorch version: 2.5.1
+torch.cuda.is_available(): False
+⚠️  CUDA not available on this node (this is normal on login nodes)
+   PyTorch was built with CUDA 12.4 support
+   CUDA will be available when job runs on GPU compute nodes
+============================================================
+
+Using device: cpu
+⚠️  WARNING: Training will use CPU (CUDA not available on this node)
+   This is normal on login nodes. Training will use GPUs on compute nodes.
+
+Loading YOLOS model 'hustvl/yolos-small' with 12 classes...
+This may take a few minutes if downloading from Hugging Face Hub...
+Hugging Face cache directory: /home1/11112/rasmus1142/.cache/huggingface
+Downloading/loading model from Hugging Face Hub...
+✓ Model loaded successfully
+Fixing loss function empty_weight for new number of classes...
+Target number of classes (including background): 13
+Warning: loss_function does not have criterion attribute
+
+Applying global monkey-patch to torch.nn.functional.cross_entropy...
+✓ Monkey-patched torch.nn.functional.cross_entropy globally
+
+Skipping forward pass test (running in SLURM - will test during training)...
+============================================================
+All setup complete. Ready to start training...
+============================================================
+[neptune] [info   ] Neptune initialized. Open in the app: https://app.neptune.ai/ECE381V-Deep-Learning/ECE381V-Term-Project-ViT-YOLO-Hybrid-Model/e/EC-21
+Neptune logging enabled with async mode for real-time updates.
+============================================================
+Starting YOLOS training on ExDark...
+============================================================
+
+============================================================
+Training Configuration:
+============================================================
+  Model: hustvl/yolos-small
+  Epochs: 10
+  Device: cpu
+  Batch size: 1000
+  Learning rate: 5e-05
+  Weight decay: 0.0001
+  DataLoader workers: 0
+  Train samples: 6194
+  Val samples: 5176
+============================================================
+
+Epoch 1/10
+Starting training epoch 1...
+==========================================
+End Time: Thu Nov 20 01:30:05 PM CST 2025
+Training completed!
+==========================================
