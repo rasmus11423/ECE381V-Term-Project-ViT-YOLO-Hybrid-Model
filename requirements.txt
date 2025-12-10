@@ -1,0 +1,47 @@
+# ECE381V-Term-Project-ViT-YOLO-Hybrid-Model Requirements
+# 
+# Installation Instructions:
+# 1. First install PyTorch with CUDA support (see note below)
+# 2. Then install other requirements: pip install -r requirements.txt
+#
+# For TACC with CUDA 12.8:
+# pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+
+# Core Deep Learning Frameworks
+# Note: PyTorch should be installed separately with CUDA support
+# torch>=2.0.0  # Install separately: pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+# torchvision>=0.15.0  # Included with PyTorch installation
+# torchaudio>=2.0.0  # Included with PyTorch installation
+
+# Transformers and Model Libraries
+transformers>=4.42.0  # For YOLOS and ViT models
+ultralytics>=8.0.0  # For YOLOv5 utilities
+accelerate>=0.20.0  # For distributed training
+datasets>=2.0.0  # HuggingFace datasets (if needed)
+
+# Image Processing
+opencv-python>=4.6.0
+Pillow>=10.3.0
+albumentations>=1.0.3
+lxml>=4.9.0
+
+# Data Processing
+numpy>=1.23.5
+pandas>=1.1.4
+scipy>=1.4.1
+
+# Visualization and Plotting
+matplotlib>=3.3.0
+tqdm>=4.66.3
+
+# Dataset Download
+gdown>=4.7.0  # For downloading from Google Drive
+
+# Experiment Tracking (Optional)
+neptune-client>=1.0.0  # For Neptune.ai logging
+
+# Utilities
+PyYAML>=5.3.1
+requests>=2.32.2
+packaging>=21.0
+
