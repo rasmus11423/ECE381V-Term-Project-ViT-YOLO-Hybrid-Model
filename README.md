@@ -170,7 +170,7 @@ scancel <jobid>
 ECE381V-Term-Project-ViT-YOLO-Hybrid-Model/
 │
 ├── Method 1: ViT-Based Attention-Guided Input for YOLO
-│   └── ExDark_Dataset_Download.ipynb          # Jupyter notebook implementing Method 1
+│   └── ViT_Enhanced_Images.ipynb              # Jupyter notebook implementing Method 1
 │
 ├── Method 2: Hybrid ViT-YOLO Framework
 │   ├── Hybrid_ViT_YOLO_train.py               # Main training script for Method 2
@@ -211,6 +211,12 @@ ECE381V-Term-Project-ViT-YOLO-Hybrid-Model/
 - Images are automatically split into train/val/test sets and converted to YOLO format
 
 ### Training Outputs
+- **Method 1 (ViT_Enhanced_Images.ipynb)**:
+  - Training outputs saved to `/content/yolov5/runs/train`
+  - ViT-Enhanced images are generated and saved to `/content/Data/ExDark_Masked`
+  - Training curves, validation metrics, and test-set results are displayed during execution.
+  - Model checkpoints are automatically saved throughout the training process.
+    
 - **Method 2 (Hybrid_ViT_YOLO_train.py)**:
   - Training outputs saved to `runs/train/`
   - Training curves: `training_curves_hybrid_vit_yolo_exdark.png`
@@ -227,7 +233,7 @@ ECE381V-Term-Project-ViT-YOLO-Hybrid-Model/
 - Neptune.ai logs metrics, losses, and hyperparameters (if configured)
 
 ### Performance
-- Method 2 uses image size 640x640 for training
+- Method 1 and Method 2 use image size 640x640 for training
 - Supports multi-GPU training for faster convergence
 - Batch size is automatically adjusted based on available GPU memory
 
