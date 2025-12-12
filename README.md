@@ -3,7 +3,7 @@
 Hybrid ViT-YOLO for Low-Light Object Detection — A research project integrating Vision Transformers with YOLO to enhance object detection under low-light conditions. This project implements two hybrid approaches: (1) ViT-Based Attention-Guided Input for YOLO, and (2) Hybrid ViT-YOLO Framework. Both methods are trained on the ExDARK dataset and benchmark performance, interpretability, and robustness using attention visualizations.
 
 ## Authors
-Rasmus Laansalu, Fatima Al-Janahi, Yukai Hao
+Rasmus Laansalu [laansalurasmus@gmail.com], Fatima Al-Janahi [fatimaaljanahi@my.utexas.edu], Yukai Hao [yh26488@my.utexas.edu]
 
 ## 📊 Dataset: ExDark
 
